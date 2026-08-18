@@ -19,12 +19,12 @@ class AppErrorBoundary extends React.Component {
 
   render() {
     if (!this.state.error) return this.props.children;
-    return <main className="app-error-boundary" translate="no">
+    return <main className="app-error-boundary">
       <span>INTERFACE RECOVERY</span>
       <h1>The evaluation workspace needs to reload</h1>
-      <p>The model response and saved clinical data remain in the local SQLite database. Browser translation or an extension may have changed the page while the interface was updating.</p>
+      <p>The model response and saved clinical data remain in the local SQLite database. A browser extension or an unexpected interface update may have interrupted rendering.</p>
       <button type="button" onClick={() => window.location.reload()}>Reload workspace</button>
-      <small>If this repeats, turn off automatic translation for 127.0.0.1.</small>
+      <small>Reloading does not delete generated responses or saved assessments.</small>
     </main>;
   }
 }
