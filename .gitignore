@@ -1,0 +1,29 @@
+# Dependencies and build output
+node_modules/
+dist/
+
+# Local persistent data — may contain clinician ratings and feedback
+.data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Runtime configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs and editor files
+*.log
+.runtime/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Temporary review material
+tmp/
+tmp-*/
+coverage/

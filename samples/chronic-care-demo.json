@@ -1,0 +1,32 @@
+[
+  {
+    "id": "SIM-2026-1001",
+    "patientName": "Eleanor Tan",
+    "age": 64,
+    "sex": "Female",
+    "condition": "T2DM · Hypertension · Early CKD",
+    "priority": "Routine",
+    "status": "Pending",
+    "visits": 3,
+    "clinicalData": {
+      "simulated": true,
+      "diagnoses": [
+        "Type 2 diabetes mellitus",
+        "Hypertension",
+        "Early CKD risk"
+      ],
+      "allergies": ["Penicillin — rash"],
+      "medications": ["Metformin 500 mg twice daily"],
+      "labs": [
+        {
+          "date": "2026-07-18",
+          "a1c": 8.1,
+          "egfr": 68,
+          "uacr": 31,
+          "bp": "146/88"
+        }
+      ],
+      "summary": "Simulated chronic-care import record."
+    }
+  }
+]

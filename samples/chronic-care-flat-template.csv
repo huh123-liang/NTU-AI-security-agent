@@ -1,0 +1,2 @@
+id,patientName,age,sex,condition,priority,status,visits
+SIM-2026-1002,David Lim,55,Male,T2DM and Hypertension,Routine,Pending,2

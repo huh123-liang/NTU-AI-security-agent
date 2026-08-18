@@ -1,0 +1,106 @@
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+
+let instance = null;
+
+export const now = () => new Date().toISOString();
+export const id = (prefix) => `${prefix}-${randomUUID().replaceAll("-", "").slice(0, 18).toUpperCase()}`;
+export const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+
+export function hashPassword(password, salt = randomBytes(16).toString("hex")) {
+  return { salt, hash: scryptSync(String(password), salt, 64).toString("hex") };
+}
+
+export function verifyPassword(password, salt, expectedHex) {
+  const actual = scryptSync(String(password), salt, 64);
+  const expected = Buffer.from(expectedHex, "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function seedAdmin(db) {
+  const existing = db.prepare("SELECT id FROM users WHERE role = 'admin' LIMIT 1").get();
+  if (existing) return existing.id;
+  const timestamp = now();
+  const credentials = hashPassword("123");
+  const adminId = id("USR");
+  db.prepare(`INSERT INTO users (id, display_name, email, password_hash, password_salt, role, active, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'admin', 1, ?, ?)`)
+    .run(adminId, "Platform Administrator", "admin@ntu-demo.local", credentials.hash, credentials.salt, timestamp, timestamp);
+  return adminId;
+}
+
+export function getDatabase(root) {
+  if (instance?.root === root) return instance.db;
+  const dataDir = path.join(root, ".data");
+  mkdirSync(dataDir, { recursive: true });
+  const databasePath = path.join(dataDir, "platform.db");
+  const db = new DatabaseSync(databasePath);
+  const schemaPath = path.join(root, "db", "schema.sql");
+  if (!existsSync(schemaPath)) throw new Error("SQL schema is missing.");
+  db.exec(readFileSync(schemaPath, "utf8"));
+  seedAdmin(db);
+  db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now());
+  instance = { root, db };
+  return db;
+}
+
+export function publicUser(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    displayName: row.display_name,
+    email: row.email,
+    role: row.role,
+    active: Boolean(row.active),
+    createdAt: row.created_at,
+  };
+}
+
+export function createSession(db, userId) {
+  const token = randomBytes(32).toString("base64url");
+  const createdAt = now();
+  const expiresAt = new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString();
+  db.prepare("INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
+    .run(sha256(token), userId, expiresAt, createdAt);
+  return { token, expiresAt };
+}
+
+export function getAuthenticatedUser(db, req) {
+  const authorization = String(req.headers.authorization || "");
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  if (!token) return null;
+  const row = db.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
+    WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1`).get(sha256(token), now());
+  return publicUser(row);
+}
+
+export function removeSession(db, req) {
+  const authorization = String(req.headers.authorization || "");
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  if (token) db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(sha256(token));
+}
+
+export function audit(db, actorId, action, entityType, entityId = null, details = {}) {
+  db.prepare(`INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, details_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(id("AUD"), actorId || null, action, entityType, entityId, JSON.stringify(details), now());
+}
+
+export function withTransaction(db, work) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = work();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function resetDatabaseForTests() {
+  try { instance?.db?.close(); } catch { /* best effort */ }
+  instance = null;
+}
