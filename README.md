@@ -17,7 +17,7 @@ An English-language, local research platform for independent clinician evaluatio
 
 ## One-click Windows launch
 
-Double-click `Start-Platform.cmd`. It builds the production interface when needed, starts the local SQLite/API server in the background, and opens the platform. The launcher uses port 4190 or the next available port.
+Double-click `Start-Platform.cmd` or the Chinese launcher `一键启动-AI医疗评估平台.cmd`. It detects an existing platform instance, rebuilds the interface only when source files changed, starts the local SQLite/API server in the background, selects an available port, and opens the platform. Diagnostic logs are saved under `.runtime/` if startup fails.
 
 Double-click `Stop-Platform.cmd` to stop the process started by the launcher.
 
