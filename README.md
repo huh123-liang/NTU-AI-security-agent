@@ -17,9 +17,9 @@ An English-language, local research platform for independent clinician evaluatio
 
 ## One-click Windows launch
 
-Double-click `Start-Platform.cmd` or the Chinese launcher `一键启动-AI医疗评估平台.cmd`. It detects an existing platform instance, rebuilds the interface only when source files changed, starts the local SQLite/API server in the background, selects an available port, and opens the platform. Diagnostic logs are saved under `.runtime/` if startup fails.
+Double-click `Start-Platform.cmd` or the Chinese launcher `一键启动-AI医疗评估平台.cmd`. The launcher reuses a service only when its instance ID, PID, project path and port all match. Stale records and unrelated services are never reused; if 4190 is occupied, a new verified instance automatically uses 4191–4199. It rebuilds only when source files changed, starts the local SQLite/API server in the background, checks DeepSeek HTTPS reachability, and opens the verified port. The same provider-connectivity result is exposed by `/api/v1/health`. Diagnostic logs and the runtime identity are stored under `.runtime/`.
 
-Double-click `Stop-Platform.cmd` to stop the process started by the launcher.
+Double-click `Stop-Platform.cmd` to stop only the process whose runtime identity is verified for this project.
 
 Admin demo login:
 

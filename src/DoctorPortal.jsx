@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight, ArrowsClockwise, Brain, CaretDown, ChartLineUp, ChatText, Check, ClipboardText, CloudArrowUp, Database,
-  Eye, FileArrowUp, FileText, FolderOpen, Gauge, Info, ListChecks, MagnifyingGlass, Plus, Robot,
-  ShieldCheck, Sparkle, SquaresFour, TrendUp, UploadSimple, Warning, X,
+  ArrowSquareOut, Eye, FileArrowUp, FileText, FolderOpen, Gauge, Info, ListChecks, MagnifyingGlass, Plus, Robot,
+  ShareNetwork, ShieldCheck, Sparkle, SquaresFour, Stop, TrendUp, UploadSimple, Warning, X,
 } from "@phosphor-icons/react";
-import { CartesianGrid, Line, LineChart, RadialBar, RadialBarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { CartesianGrid, Line, LineChart, RadialBar, RadialBarChart, ReferenceDot, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, fileToBase64 } from "./api.js";
 import { CRITERIA, REASON_TAGS, dateTime, measurement, shortDate, titleCase } from "./constants.js";
 import { ConfidentialNote, EmptyState, ErrorState, InfoTip, LoadingState, MetricCard, Modal, PageHeader, StatusBadge } from "./components.jsx";
@@ -105,22 +105,35 @@ function Workspace({ caseId, initialRunId, notify }) {
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [rawEvidenceTarget, setRawEvidenceTarget] = useState(null);
+  const [selectedEvidence, setSelectedEvidence] = useState(null);
 
   const refreshRuns = async (preferId) => { const result = await api.runs(caseId); setRuns(result.items); const next = preferId || selectedRunId || result.items.find((item) => item.status === "Completed")?.id || ""; setSelectedRunId(next); return next; };
-  useEffect(() => { setLoading(true); Promise.all([api.case(caseId), api.runs(caseId)]).then(([caseResult, runResult]) => { setCaseData(caseResult.case); setRuns(runResult.items); setSelectedRunId(runResult.items.find((item) => item.id === initialRunId && item.status === "Completed")?.id || runResult.items.find((item) => item.status === "Completed")?.id || ""); }).catch((failure) => setError(failure.message)).finally(() => setLoading(false)); }, [caseId, initialRunId]);
-  useEffect(() => { if (!selectedRunId) { setAssessment(null); setDraft(null); return; } api.assessment(selectedRunId).then((result) => { const value = result.assessment; setAssessment(value); setDraft(buildDraft(value)); }); }, [selectedRunId]);
+  useEffect(() => { setLoading(true); Promise.all([api.case(caseId), api.runs(caseId)]).then(([caseResult, runResult]) => { setCaseData(caseResult.case); setRuns(runResult.items); setSelectedRunId(runResult.items.find((item) => item.id === initialRunId)?.id || runResult.items.find((item) => item.status === "Running")?.id || runResult.items.find((item) => item.status === "Completed")?.id || ""); }).catch((failure) => setError(failure.message)).finally(() => setLoading(false)); }, [caseId, initialRunId]);
   const selectedRun = runs.find((item) => item.id === selectedRunId);
-  const generate = async () => { setGenerating(true); setError(""); try { const run = await api.generateRun(caseId); await refreshRuns(run.id); notify(`New ${run.provider} response saved`); } catch (failure) { setError(failure.message); } finally { setGenerating(false); } };
+  useEffect(() => {
+    if (!runs.some((run) => run.status === "Running")) return undefined;
+    const timer = window.setInterval(() => api.runs(caseId).then((result) => setRuns(result.items)).catch(() => {}), 900);
+    return () => window.clearInterval(timer);
+  }, [caseId, runs]);
+  useEffect(() => {
+    setSelectedEvidence(null);
+    if (!selectedRunId || selectedRun?.status !== "Completed") { setAssessment(null); setDraft(null); return; }
+    api.assessment(selectedRunId).then((result) => { const value = result.assessment; setAssessment(value); setDraft(buildDraft(value)); });
+  }, [selectedRunId, selectedRun?.status]);
+  const generate = async () => { setGenerating(true); setError(""); try { const run = await api.generateRun(caseId); await refreshRuns(run.id); notify(`${run.provider} generation started`); } catch (failure) { setError(failure.message); } finally { setGenerating(false); } };
+  const cancel = async () => { if (!selectedRun) return; setError(""); try { const result = await api.cancelRun(selectedRun.id); setRuns((current) => current.map((run) => run.id === result.run.id ? result.run : run)); notify("Generation cancelled and preserved in run history"); } catch (failure) { setError(failure.message); } };
+  const retry = async () => { if (!selectedRun) return; setGenerating(true); setError(""); try { const run = await api.retryRun(selectedRun.id); await refreshRuns(run.id); notify("A new retry run has started"); } catch (failure) { setError(failure.message); } finally { setGenerating(false); } };
   const save = async (status) => { if (!draft) return; setSaving(true); setError(""); try { const result = await api.saveAssessment(selectedRunId, { ...draft, status, criteria: CRITERIA.map((criterion) => ({ key: criterion.key, ...draft.criteria[criterion.key] })) }); setAssessment(result.assessment); setDraft(buildDraft(result.assessment)); notify(status === "Submitted" ? "Assessment submitted and remains editable until Admin locks it" : "Draft saved to SQLite"); } catch (failure) { setError(failure.message); } finally { setSaving(false); } };
   if (loading) return <LoadingState />;
   if (error && !caseData) return <ErrorState message={error} />;
   const visits = caseData?.clinicalData?.visits || [];
-  return <div className="workspace-shell"><div className="workflow-bar"><span className="complete"><b>1</b><i>Case context<small>Visits 1–9 + withheld reference</small></i></span><span className={selectedRun ? "complete" : "active"}><b>2</b><i>AI response<small>Choose or generate a run</small></i></span><span className={selectedRun ? "active" : ""}><b>3</b><i>Evaluation<small>Score and explain</small></i></span><span className={assessment?.status === "Submitted" ? "complete" : ""}><b>4</b><i>Submit<small>Editable until final lock</small></i></span></div>
-    <div className="workspace-grid"><section className="workspace-column patient-column"><div className="column-heading"><span>SIMULATED PATIENT DATA</span><button className="text-button" onClick={() => setEvidenceOpen(true)}><Eye size={14} />Raw evidence</button></div><PatientContext patient={caseData} visits={visits} /></section>
-      <section className="workspace-column response-column"><div className="column-heading"><span>AI RESPONSE · VISIT 10 PLAN</span><div className="run-controls"><select value={selectedRunId} onChange={(event) => setSelectedRunId(event.target.value)}><option value="">Select a response run</option>{runs.map((run) => <option key={run.id} value={run.id}>{run.status} · {run.modelVersion} · {shortDate(run.createdAt)}</option>)}</select><button className="secondary-button compact" disabled={generating} onClick={generate}>{generating ? <ArrowsClockwise className="spin" size={14} /> : <Plus size={14} />}{generating ? "Generating…" : "New run"}</button></div></div>{error && <div className="inline-alert"><Warning size={16} />{error}</div>}{selectedRun ? <ResponsePanel run={selectedRun} /> : <EmptyState icon={Robot} title="No response selected" copy="Generate a new DeepSeek response or choose an existing run. Every run is versioned independently." action={<button className="primary-button" disabled={generating} onClick={generate}>{generating ? "Generating with DeepSeek…" : "Generate response"}</button>} />}</section>
-      <section className="workspace-column review-column"><div className="column-heading"><span>SAFETY REVIEW COCKPIT</span><InfoTip>Scores are private from other doctors.</InfoTip></div>{selectedRun && draft ? <ReviewCockpit draft={draft} setDraft={setDraft} assessment={assessment} saving={saving} onSave={save} /> : <EmptyState icon={Gauge} title="Choose a response run" copy="The rubric opens after a completed AI response is selected." />}</section></div>
-    {evidenceOpen && <RawEvidenceModal patient={caseData} onClose={() => setEvidenceOpen(false)} />}
+  const runComplete = selectedRun?.status === "Completed";
+  return <div className="workspace-shell"><div className="workflow-bar"><span className="complete"><b>1</b><i>Case context<small>Visits 1–9 + withheld reference</small></i></span><span className={runComplete ? "complete" : "active"}><b>2</b><i>AI response<small>Choose or generate a run</small></i></span><span className={runComplete ? "active" : ""}><b>3</b><i>Evaluation<small>Score and explain</small></i></span><span className={assessment?.status === "Submitted" ? "complete" : ""}><b>4</b><i>Submit<small>Editable until final lock</small></i></span></div>
+    <div className="workspace-grid"><section className="workspace-column patient-column"><div className="column-heading"><span>SIMULATED PATIENT DATA</span><button className="text-button" onClick={() => setRawEvidenceTarget({ visitNumber: 10, jsonPath: "$.visits[9]" })}><Eye size={14} />Raw evidence</button></div><PatientContext patient={caseData} visits={visits} selectedEvidence={selectedEvidence} /></section>
+      <section className="workspace-column response-column"><div className="column-heading"><span>AI RESPONSE · VISIT 10 PLAN</span><div className="run-controls"><select value={selectedRunId} onChange={(event) => setSelectedRunId(event.target.value)}><option value="">Select a response run</option>{runs.map((run) => <option key={run.id} value={run.id}>{run.status} · {run.modelVersion} · {shortDate(run.createdAt)}</option>)}</select><button className="secondary-button compact" disabled={generating} onClick={generate}>{generating ? <ArrowsClockwise className="spin" size={14} /> : <Plus size={14} />}{generating ? "Starting…" : "New run"}</button></div></div>{error && <div className="inline-alert"><Warning size={16} />{error}</div>}{selectedRun ? <ResponsePanel run={selectedRun} selectedEvidence={selectedEvidence} onSelectEvidence={setSelectedEvidence} onOpenRaw={(evidence) => setRawEvidenceTarget(evidence)} onCancel={cancel} onRetry={retry} /> : <EmptyState icon={Robot} title="No response selected" copy="Generate a new DeepSeek response or choose an existing run. Every run is versioned independently." action={<button className="primary-button" disabled={generating} onClick={generate}>{generating ? "Starting DeepSeek…" : "Generate response"}</button>} />}</section>
+      <section className="workspace-column review-column"><div className="column-heading"><span>SAFETY REVIEW COCKPIT</span><InfoTip>Scores are private from other doctors.</InfoTip></div>{runComplete && draft ? <ReviewCockpit draft={draft} setDraft={setDraft} assessment={assessment} saving={saving} onSave={save} /> : <EmptyState icon={Gauge} title={selectedRun?.status === "Running" ? "Generation in progress" : "Choose a completed run"} copy="The rubric opens after a completed AI response is selected." />}</section></div>
+    {rawEvidenceTarget && <RawEvidenceModal patient={caseData} target={rawEvidenceTarget} onClose={() => setRawEvidenceTarget(null)} />}
   </div>;
 }
 
@@ -129,22 +142,71 @@ function buildDraft(assessment) {
   return { criteria, safetyIssue: assessment?.safetyIssue || "Undecided", reasonTags: assessment?.reasonTags || [], caseFeedback: assessment?.caseFeedback || "" };
 }
 
-function PatientContext({ patient, visits }) {
-  const chartData = visits.map((visit) => ({ date: shortDate(visit.date).replace(/ \d{4}$/, ""), sbp: measurement(visit, "systolic_bp"), hba1c: measurement(visit, "hba1c"), egfr: measurement(visit, "egfr"), ldl: measurement(visit, "ldl_cholesterol") }));
+const TREND_METRICS = [
+  { key: "hba1c", label: "HbA1c", color: "#c8102e" },
+  { key: "systolic_bp", label: "BP", color: "#2a6aa5" },
+  { key: "egfr", label: "eGFR", color: "#087a5b" },
+  { key: "ldl_cholesterol", label: "LDL", color: "#7857a8" },
+];
+
+function PatientContext({ patient, visits, selectedEvidence }) {
+  const timelineRefs = useRef({});
+  const availableMetrics = TREND_METRICS.filter((metric) => visits.some((visit) => measurement(visit, metric.key) !== undefined));
+  const [metricKey, setMetricKey] = useState(availableMetrics[0]?.key || "systolic_bp");
+  useEffect(() => {
+    if (!selectedEvidence) return;
+    if (availableMetrics.some((metric) => metric.key === selectedEvidence.metricKey)) setMetricKey(selectedEvidence.metricKey);
+    window.setTimeout(() => timelineRefs.current[selectedEvidence.visitNumber]?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+  }, [selectedEvidence]);
+  const activeMetric = availableMetrics.find((metric) => metric.key === metricKey) || availableMetrics[0] || TREND_METRICS[1];
+  const chartData = visits.map((visit) => ({ visitNumber: Number(visit.visit_number), date: shortDate(visit.date).replace(/ \d{4}$/, ""), value: measurement(visit, activeMetric.key) }));
+  const selectedPoint = selectedEvidence?.metricKey === activeMetric.key ? chartData.find((item) => item.visitNumber === selectedEvidence.visitNumber) : null;
   const latest = visits.at(-1) || {};
   return <div className="patient-scroll"><article className="patient-summary"><header className="patient-summary-head"><div className="patient-identity"><span className="patient-avatar large">{patient.patientId.slice(-2)}</span><div><span className="summary-kicker">PATIENT RECORD</span><h2>{patient.patientId}</h2><p>{patient.age || "—"}-year-old · {titleCase(patient.sex)} · {titleCase(patient.ethnicity)}</p></div></div><StatusBadge>Synthetic</StatusBadge></header><dl className="patient-meta-strip"><div><dt>Dataset</dt><dd title={patient.datasetName}>{patient.datasetName}</dd></div><div><dt>Reference visit</dt><dd>{shortDate(latest.date)}</dd></div><div><dt>History</dt><dd>{visits.length} longitudinal visits</dd></div></dl><div className="diagnosis-block"><div className="diagnosis-heading"><b>Active conditions</b><span>{patient.conditions.length}</span></div><ul>{patient.conditions.map((condition) => <li key={condition.key || condition.display}>{condition.display || titleCase(condition.key)}</li>)}</ul></div></article>
-    <article className="timeline-card"><div className="subsection-title"><b>Clinical timeline</b><span>{visits.length} visits</span></div><div className="timeline">{visits.map((visit, index) => <div key={`${visit.visit_number}-${visit.date}`} className={index === visits.length - 1 ? "reference" : ""}><i /><span><b>{shortDate(visit.date)}</b><small>Visit {visit.visit_number}{index === visits.length - 1 ? " · Reference" : " · Model input"}</small></span><p>{visit.consultation?.reason_for_consultation?.type ? titleCase(visit.consultation.reason_for_consultation.type) : "Chronic-care review"}</p></div>)}</div></article>
-    <article className="trend-card"><div className="subsection-title"><b>Longitudinal trends</b><span>Source measurements</span></div><div className="trend-chart"><ResponsiveContainer width="100%" height={180}><LineChart data={chartData} margin={{ top: 8, right: 8, left: -25, bottom: 0 }}><CartesianGrid stroke="#edf1f5" vertical={false} /><XAxis dataKey="date" tick={{ fontSize: 9, fill: "#728198" }} /><YAxis tick={{ fontSize: 9, fill: "#728198" }} /><Tooltip /><Line type="monotone" dataKey="sbp" name="SBP" stroke="#c8102e" strokeWidth={2} dot={false} connectNulls /><Line type="monotone" dataKey="egfr" name="eGFR" stroke="#087a5b" strokeWidth={2} dot={false} connectNulls /></LineChart></ResponsiveContainer></div><div className="trend-legend"><span className="red">SBP</span><span className="green">eGFR</span><small>Additional labs remain available in raw evidence.</small></div></article>
+    <article className="timeline-card"><div className="subsection-title"><b>Clinical timeline</b><span>{visits.length} visits</span></div><div className="timeline">{visits.map((visit, index) => { const selected = selectedEvidence?.visitNumber === Number(visit.visit_number); return <div ref={(element) => { timelineRefs.current[visit.visit_number] = element; }} key={`${visit.visit_number}-${visit.date}`} className={`${index === visits.length - 1 ? "reference" : ""}${selected ? " evidence-selected" : ""}`}><i /><span><b>{shortDate(visit.date)}</b><small>Visit {visit.visit_number}{index === visits.length - 1 ? " · Reference" : " · Model input"}</small></span><p>{selected ? `${selectedEvidence.metricLabel}: ${selectedEvidence.value} ${selectedEvidence.unit}` : visit.consultation?.reason_for_consultation?.type ? titleCase(visit.consultation.reason_for_consultation.type) : "Chronic-care review"}</p></div>; })}</div></article>
+    <article className={`trend-card${selectedPoint ? " evidence-selected" : ""}`}><div className="subsection-title"><b>Longitudinal trends</b><span>{selectedPoint ? `Evidence · Visit ${selectedPoint.visitNumber}` : "Source measurements"}</span></div><div className="metric-tabs">{availableMetrics.map((metric) => <button key={metric.key} className={activeMetric.key === metric.key ? "selected" : ""} onClick={() => setMetricKey(metric.key)}>{metric.label}</button>)}</div><div className="trend-chart"><ResponsiveContainer width="100%" height={180}><LineChart data={chartData} margin={{ top: 10, right: 10, left: -18, bottom: 0 }}><CartesianGrid stroke="#edf1f5" vertical={false} /><XAxis dataKey="date" tick={{ fontSize: 8, fill: "#728198" }} /><YAxis tick={{ fontSize: 8, fill: "#728198" }} /><Tooltip formatter={(value) => [`${value}`, activeMetric.label]} /><Line type="monotone" dataKey="value" name={activeMetric.label} stroke={activeMetric.color} strokeWidth={2} dot={{ r: 2, fill: "#fff", strokeWidth: 1.5 }} connectNulls />{selectedPoint?.value !== undefined && <ReferenceDot x={selectedPoint.date} y={selectedPoint.value} r={6} fill="#fff" stroke="#c8102e" strokeWidth={3} />}</LineChart></ResponsiveContainer></div><div className="trend-legend"><span style={{ color: activeMetric.color }}>{activeMetric.label}</span><small>{selectedPoint ? "Linked to the selected, backend-verified citation." : "Choose a metric to inspect its longitudinal pattern."}</small></div></article>
     <p className="source-note">Source: synthetic research dataset · SHA {patient.sourceSha256.slice(0, 16)}…</p></div>;
 }
 
-function ResponsePanel({ run }) {
-  const lines = String(run.output || "").split("\n");
-  return <div className="response-scroll"><div className="response-meta"><span><Robot size={17} /><b>{run.provider}</b><small>{run.modelVersion}</small></span><span><FileText size={17} /><b>{run.promptVersion}</b><small>{dateTime(run.completedAt)}</small></span><StatusBadge>{run.status}</StatusBadge></div><article className="model-output">{lines.map((line, index) => line.startsWith("### ") ? <h3 key={index}>{renderInlineMarkdown(line.slice(4))}</h3> : line.startsWith("## ") ? <h2 key={index}>{renderInlineMarkdown(line.slice(3))}</h2> : /^\d+\./.test(line.trim()) ? <p className="numbered" key={index}>{renderInlineMarkdown(line)}</p> : line.trim().startsWith("-") ? <p className="bullet" key={index}>{renderInlineMarkdown(line.replace(/^\s*-\s*/, ""))}</p> : line.trim() ? <p key={index}>{renderInlineMarkdown(line)}</p> : null)}</article><div className="evidence-callout"><ShieldCheck size={19} /><div><b>Reference visit remains withheld</b><p>This response was generated from visits 1–9 only. Visit 10 is available to the doctor as reference evidence.</p></div></div></div>;
+const GENERATION_STAGES = [
+  ["preparing_data", "Preparing data"], ["calling_model", "Calling model"], ["processing_response", "Processing response"],
+  ["validating_evidence", "Validating evidence"], ["saving", "Saved"],
+];
+
+function GenerationTrail({ run }) {
+  const visited = new Set((run.stageHistory || []).map((item) => item.stage));
+  const activeIndex = GENERATION_STAGES.findIndex(([stage]) => stage === run.stage);
+  return <div className={`generation-trail status-${String(run.status).toLowerCase()}`}>{GENERATION_STAGES.map(([stage, label], index) => { const done = visited.has(stage) || run.status === "Completed"; const active = run.status === "Running" && index === activeIndex; return <div key={stage} className={`${done ? "done" : ""}${active ? " active" : ""}`}><i>{done && !active ? <Check size={10} /> : index + 1}</i><span>{label}</span></div>; })}</div>;
 }
 
-function renderInlineMarkdown(text) {
-  return String(text).split(/(\*\*[^*]+\*\*)/g).filter(Boolean).map((part, index) => part.startsWith("**") && part.endsWith("**") ? <strong key={`${part}-${index}`}>{part.slice(2, -2)}</strong> : part);
+function GenerationPanel({ run, onCancel, onRetry }) {
+  const running = run.status === "Running";
+  return <div className="generation-state"><div className="generation-orbit"><Robot size={28} /></div><span className="eyebrow">MODEL RUN · {run.id.slice(-8)}</span><h2>{running ? "Building an evidence-linked response" : `${run.status} generation`}</h2><p>{running ? `The backend is currently ${String(run.stage || "preparing_data").replaceAll("_", " ")}. This state is persisted in SQLite and will recover after refresh.` : run.errorMessage || "This run ended before a response was saved."}</p><div className="generation-data-route" aria-label="Live generation data route"><span><Database size={15} />Visits 1–9</span><ArrowRight size={13} /><span className={running ? "active" : ""}><Robot size={15} />Model</span><ArrowRight size={13} /><span><ShieldCheck size={15} />Evidence check</span></div><GenerationTrail run={run} />{running ? <button className="danger-button" onClick={onCancel}><Stop size={15} />Cancel generation</button> : <button className="secondary-button" onClick={onRetry}><ArrowsClockwise size={15} />Retry as new run</button>}</div>;
+}
+
+function EvidenceLensCard({ evidence, onOpenRaw }) {
+  if (!evidence) return null;
+  return <article className="evidence-lens"><header><span className="evidence-lens-icon"><ShareNetwork size={18} /></span><div><span className="eyebrow">EVIDENCE LENS</span><h3>Verified source connection</h3></div><StatusBadge>Verified</StatusBadge></header><div className="evidence-lens-grid"><span><small>Source</small><b>Visit {evidence.visitNumber} · {shortDate(evidence.date)}</b></span><span><small>Metric</small><b>{evidence.metricLabel}</b></span><span><small>Patient value</small><b>{evidence.value} {evidence.unit}</b></span></div><div className="evidence-path"><small>Original JSON path</small><code>{evidence.jsonPath}</code></div><button className="text-button" onClick={() => onOpenRaw(evidence)}>Open original evidence<ArrowSquareOut size={13} /></button></article>;
+}
+
+function ResponsePanel({ run, selectedEvidence, onSelectEvidence, onOpenRaw, onCancel, onRetry }) {
+  if (run.status !== "Completed") return <GenerationPanel run={run} onCancel={onCancel} onRetry={onRetry} />;
+  const evidenceMap = new Map((run.evidenceLinks || []).map((item) => [item.id.toUpperCase(), item]));
+  const lines = String(run.output || "").split("\n");
+  const inline = (line) => renderInlineMarkdown(line, evidenceMap, onSelectEvidence);
+  return <div className="response-scroll"><div className="response-meta"><span><Robot size={17} /><b>{run.provider}</b><small>{run.modelVersion}</small></span><span><FileText size={17} /><b>{run.promptVersion}</b><small>{dateTime(run.completedAt)}</small></span><StatusBadge>{run.status}</StatusBadge></div>{selectedEvidence && <EvidenceLensCard evidence={selectedEvidence} onOpenRaw={onOpenRaw} />}<article className="model-output">{lines.map((line, index) => line.startsWith("### ") ? <h3 key={index}>{inline(line.slice(4))}</h3> : line.startsWith("## ") ? <h2 key={index}>{inline(line.slice(3))}</h2> : /^\d+\./.test(line.trim()) ? <p className="numbered" key={index}>{inline(line)}</p> : line.trim().startsWith("-") ? <p className="bullet" key={index}>{inline(line.replace(/^\s*-\s*/, ""))}</p> : line.trim() ? <p key={index}>{inline(line)}</p> : null)}</article><div className="evidence-callout"><ShieldCheck size={19} /><div><b>{run.evidenceLinks?.length || 0} verified evidence links</b><p>Only Visit 1–9 source IDs validated by the backend are interactive. Visit 10 remains withheld reference evidence.</p>{run.invalidEvidenceCitations?.length > 0 && <small>{run.invalidEvidenceCitations.length} unverified citation token(s) were not linked.</small>}</div></div><GenerationTrail run={run} /></div>;
+}
+
+function renderInlineMarkdown(text, evidenceMap = new Map(), onSelectEvidence = () => {}) {
+  return String(text).split(/(\*\*[^*]+\*\*|\[EVID:[A-Z0-9-]+\])/gi).filter(Boolean).map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) return <strong key={`${part}-${index}`}>{part.slice(2, -2)}</strong>;
+    const citation = part.match(/^\[EVID:([A-Z0-9-]+)\]$/i);
+    if (citation) {
+      const evidence = evidenceMap.get(citation[1].toUpperCase());
+      return evidence ? <button key={`${part}-${index}`} className="evidence-citation" onClick={() => onSelectEvidence(evidence)}>V{evidence.visitNumber} · {evidence.metricLabel}</button> : <span key={`${part}-${index}`} className="evidence-unverified">Unverified source</span>;
+    }
+    return <span key={`${part}-${index}`}>{part}</span>;
+  });
 }
 
 function ReviewCockpit({ draft, setDraft, assessment, saving, onSave }) {
@@ -164,10 +226,12 @@ function ReviewCockpit({ draft, setDraft, assessment, saving, onSave }) {
     <div className="review-actions"><button className="secondary-button" disabled={!allScored || saving || locked} onClick={() => onSave("Draft")}>Save draft</button><button className="primary-button" disabled={!allScored || saving || locked} onClick={() => onSave("Submitted")}>{saving ? "Saving…" : assessment?.status === "Submitted" ? "Update submitted assessment" : "Submit assessment"}</button></div><ConfidentialNote>{locked ? "Included in a finalized Admin result; editing is disabled." : "Your scoring is not visible to other doctors and remains editable until Admin finalizes it."}</ConfidentialNote></div>;
 }
 
-function RawEvidenceModal({ patient, onClose }) {
-  const [visit, setVisit] = useState(patient.clinicalData.visits.length);
+function RawEvidenceModal({ patient, target = {}, onClose }) {
+  const [visit, setVisit] = useState(Number(target.visitNumber || patient.clinicalData.visits.length));
   const selected = patient.clinicalData.visits[visit - 1];
-  return <Modal title="Original evidence trace" copy={`${patient.sourceEntry} · SHA-256 ${patient.sourceSha256}`} onClose={onClose} wide><div className="evidence-toolbar"><label>Visit<select value={visit} onChange={(event) => setVisit(Number(event.target.value))}>{patient.clinicalData.visits.map((item) => <option key={item.visit_number} value={item.visit_number}>Visit {item.visit_number} · {shortDate(item.date)}</option>)}</select></label><span><b>JSON Path</b><code>$.visits[{visit - 1}]</code></span><StatusBadge>{visit === patient.clinicalData.visits.length ? "Reference visit" : "Model input"}</StatusBadge></div><pre className="json-viewer">{JSON.stringify(selected, null, 2)}</pre></Modal>;
+  const exactTarget = visit === Number(target.visitNumber) && target.metricKey ? selected?.clinic_measurements?.[target.metricKey] : null;
+  const jsonPath = exactTarget ? target.jsonPath : `$.visits[${visit - 1}]`;
+  return <Modal title="Original evidence trace" copy={`${patient.sourceEntry} · SHA-256 ${patient.sourceSha256}`} onClose={onClose} wide><div className="evidence-toolbar"><label>Visit<select value={visit} onChange={(event) => setVisit(Number(event.target.value))}>{patient.clinicalData.visits.map((item) => <option key={item.visit_number} value={item.visit_number}>Visit {item.visit_number} · {shortDate(item.date)}</option>)}</select></label><span><b>JSON Path</b><code>{jsonPath}</code></span><StatusBadge>{visit === patient.clinicalData.visits.length ? "Reference visit" : "Model input"}</StatusBadge></div>{exactTarget && <section className="exact-evidence"><span><ShieldCheck size={16} />Backend-verified evidence target</span><pre>{JSON.stringify(exactTarget, null, 2)}</pre></section>}<details className="full-visit-json" open={!exactTarget}><summary>Full Visit {visit} source record</summary><pre className="json-viewer">{JSON.stringify(selected, null, 2)}</pre></details></Modal>;
 }
 
 function MyAssessments({ navigate }) {

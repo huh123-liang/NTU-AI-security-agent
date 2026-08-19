@@ -31,6 +31,24 @@ function seedAdmin(db) {
   return adminId;
 }
 
+function ensureColumn(db, table, column, definition) {
+  const exists = db.prepare(`PRAGMA table_info(${table})`).all().some((item) => item.name === column);
+  if (exists) return false;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  return true;
+}
+
+function migrateRunLifecycle(db) {
+  const lifecycleAdded = ensureColumn(db, "agent_runs", "lifecycle_status", "TEXT NOT NULL DEFAULT 'Running'");
+  ensureColumn(db, "agent_runs", "stage", "TEXT NOT NULL DEFAULT 'preparing_data'");
+  ensureColumn(db, "agent_runs", "stage_history_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "agent_runs", "evidence_links_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "agent_runs", "cancel_requested", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "agent_runs", "updated_at", "TEXT");
+  if (lifecycleAdded) db.prepare("UPDATE agent_runs SET lifecycle_status = status").run();
+  db.prepare("UPDATE agent_runs SET updated_at = COALESCE(updated_at, completed_at, created_at)").run();
+}
+
 export function getDatabase(root) {
   if (instance?.root === root) return instance.db;
   const dataDir = path.join(root, ".data");
@@ -40,6 +58,7 @@ export function getDatabase(root) {
   const schemaPath = path.join(root, "db", "schema.sql");
   if (!existsSync(schemaPath)) throw new Error("SQL schema is missing.");
   db.exec(readFileSync(schemaPath, "utf8"));
+  migrateRunLifecycle(db);
   seedAdmin(db);
   db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now());
   instance = { root, db };

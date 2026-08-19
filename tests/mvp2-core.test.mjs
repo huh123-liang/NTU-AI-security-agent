@@ -8,6 +8,8 @@ import { previewAggregation, finalizeAggregation } from "../scripts/aggregation.
 import { getDatabase, hashPassword, id, now, resetDatabaseForTests, verifyPassword } from "../scripts/database.mjs";
 import { importDatasetBuffer } from "../scripts/dataset-importer.mjs";
 import { CRITERIA } from "../scripts/domain.mjs";
+import { deserializeEvidenceValidation } from "../scripts/local-api.mjs";
+import { buildEvidenceCatalog, isRetryableModelError, runMedicalModel, validateEvidenceCitations } from "../worker/model-adapter.js";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -25,6 +27,79 @@ test("passwords are salted and verified without storing plaintext", () => {
   assert.notEqual(first.hash, second.hash);
   assert.equal(verifyPassword("Doctor123!", first.salt, first.hash), true);
   assert.equal(verifyPassword("incorrect", first.salt, first.hash), false);
+});
+
+test("evidence catalog accepts only source measurements from visits 1-9", () => {
+  const visits = Array.from({ length: 10 }, (_, index) => ({
+    visit_number: index + 1,
+    date: `2026-${String(index + 1).padStart(2, "0")}-01`,
+    clinic_measurements: { hba1c: { value: 8.1 - index * 0.1, unit: "%" } },
+  }));
+  const catalog = buildEvidenceCatalog({ visits });
+  assert.equal(catalog.length, 9);
+  assert.equal(catalog.at(-1).id, "V9-HBA1C");
+  assert.equal(catalog.some((item) => item.visitNumber === 10), false);
+  const validation = validateEvidenceCitations("Improved [EVID:V1-HBA1C] but future [EVID:V10-HBA1C]", catalog);
+  assert.deepEqual(validation.evidenceLinks.map((item) => item.id), ["V1-HBA1C"]);
+  assert.deepEqual(validation.invalidCitations, ["V10-HBA1C"]);
+});
+
+test("run DTO evidence decoding preserves canonical and legacy evidence links", () => {
+  const link = { id: "V9-SYSTOLIC-BP", visitNumber: 9 };
+  assert.deepEqual(
+    deserializeEvidenceValidation(JSON.stringify({ evidenceLinks: [link], invalidCitations: [] })),
+    { evidenceLinks: [link], invalidCitations: [] },
+  );
+  assert.deepEqual(
+    deserializeEvidenceValidation(JSON.stringify({ links: [link], invalidCitations: ["V10-SYSTOLIC-BP"] })),
+    { evidenceLinks: [link], invalidCitations: ["V10-SYSTOLIC-BP"] },
+  );
+  assert.deepEqual(
+    deserializeEvidenceValidation(JSON.stringify([link])),
+    { evidenceLinks: [link], invalidCitations: [] },
+  );
+});
+
+test("the model adapter retries transient connection failures but not authentication errors", async () => {
+  assert.equal(isRetryableModelError({ cause: { code: "UND_ERR_CONNECT_TIMEOUT" } }), true);
+  assert.equal(isRetryableModelError({ status: 429 }), true);
+  assert.equal(isRetryableModelError({ status: 503 }), true);
+  assert.equal(isRetryableModelError({ status: 401 }), false);
+
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      const error = new TypeError("fetch failed");
+      error.cause = { code: "UND_ERR_CONNECT_TIMEOUT" };
+      throw error;
+    }
+    return {
+      ok: true,
+      json: async () => ({ id: "retry-ok", model: "deepseek-test", choices: [{ message: { content: "## Assessment\nRecovered." } }] }),
+    };
+  };
+  try {
+    const result = await runMedicalModel({
+      clinicalData: { visits: [] },
+      config: { apiKey: "test", model: "deepseek-test", maxAttempts: 2, retryDelayMs: 1, timeoutMs: 1000 },
+    });
+    assert.equal(calls, 2);
+    assert.equal(result.attempts, 2);
+    assert.equal(result.output.includes("Recovered"), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("run lifecycle columns are available in the real SQLite schema", () => {
+  const root = testRoot();
+  try {
+    const db = getDatabase(root);
+    const columns = new Set(db.prepare("PRAGMA table_info(agent_runs)").all().map((item) => item.name));
+    for (const column of ["lifecycle_status", "stage", "stage_history_json", "evidence_links_json", "cancel_requested", "updated_at"]) assert.equal(columns.has(column), true);
+  } finally { resetDatabaseForTests(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("the supplied ZIP imports complete cases and quarantines every incomplete manifest entry", () => {

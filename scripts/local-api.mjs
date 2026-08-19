@@ -3,7 +3,7 @@ import { getDatabase, publicUser, hashPassword, verifyPassword, createSession, g
 import { importDatasetBuffer, ensureBundledDataset } from "./dataset-importer.mjs";
 import { previewAggregation, finalizeAggregation } from "./aggregation.mjs";
 import { CRITERIA, safeJson, round } from "./domain.mjs";
-import { runMedicalModel, supportedProviders, PROMPT_VERSION } from "../worker/model-adapter.js";
+import { buildEvidenceCatalog, runMedicalModel, supportedProviders, PROMPT_VERSION, validateEvidenceCitations } from "../worker/model-adapter.js";
 
 const MAX_BODY_BYTES = 40 * 1024 * 1024;
 
@@ -70,7 +70,20 @@ const caseDto = (row, includeClinical = false) => ({
   ...(includeClinical ? { clinicalData: safeJson(row.clinical_json, {}), referenceVisit: safeJson(row.reference_visit_json, {}) } : {}),
 });
 
-const runDto = (row) => ({
+export function deserializeEvidenceValidation(value) {
+  const evidence = safeJson(value, { evidenceLinks: [], invalidCitations: [] });
+  return {
+    // `evidenceLinks` is the canonical shape written by
+    // validateEvidenceCitations. Keep `links` and the early array-only shape
+    // readable so runs created by older MVP2 builds remain traceable.
+    evidenceLinks: Array.isArray(evidence) ? evidence : evidence.evidenceLinks || evidence.links || [],
+    invalidCitations: Array.isArray(evidence) ? [] : evidence.invalidCitations || [],
+  };
+}
+
+const runDto = (row) => {
+  const evidence = deserializeEvidenceValidation(row.evidence_links_json);
+  return ({
   id: row.id,
   caseId: row.case_id,
   createdBy: row.created_by,
@@ -78,7 +91,12 @@ const runDto = (row) => ({
   provider: row.provider,
   modelVersion: row.model_version,
   promptVersion: row.prompt_version,
-  status: row.status,
+  status: row.lifecycle_status || row.status,
+  stage: row.stage || null,
+  stageHistory: safeJson(row.stage_history_json, []),
+  evidenceLinks: evidence.evidenceLinks,
+  invalidEvidenceCitations: evidence.invalidCitations,
+  cancelRequested: Boolean(row.cancel_requested),
   output: row.output,
   responseId: row.response_id,
   usage: safeJson(row.usage_json, {}),
@@ -86,7 +104,8 @@ const runDto = (row) => ({
   createdAt: row.created_at,
   completedAt: row.completed_at,
   assessmentCount: Number(row.assessment_count || 0),
-});
+  });
+};
 
 function assessmentDto(db, row) {
   const criteria = db.prepare("SELECT criterion_key, score, feedback, tags_json, custom_tags_json FROM criterion_scores WHERE assessment_id = ? ORDER BY rowid").all(row.id)
@@ -150,9 +169,111 @@ function joinedAssessmentRows(db, where = "1 = 1", parameters = []) {
 
 export function localApiPlugin(root, modelConfig = {}) {
   const db = getDatabase(root);
+  const activeJobs = new Map();
   let bootstrapError = null;
   try { ensureBundledDataset({ db, root }); }
   catch (error) { bootstrapError = error.message; }
+
+  const interruptedAt = now();
+  const interrupted = db.prepare("SELECT id, stage_history_json FROM agent_runs WHERE status = 'Running' OR lifecycle_status = 'Running'").all();
+  for (const row of interrupted) {
+    const history = safeJson(row.stage_history_json, []);
+    history.push({ stage: "interrupted", at: interruptedAt });
+    db.prepare(`UPDATE agent_runs SET status = 'Failed', lifecycle_status = 'Interrupted', stage = 'interrupted',
+      stage_history_json = ?, error_message = ?, updated_at = ?, completed_at = ? WHERE id = ?`)
+      .run(JSON.stringify(history), "Generation was interrupted because the local process stopped.", interruptedAt, interruptedAt, row.id);
+    audit(db, null, "agent_run.interrupted", "agent_run", row.id);
+  }
+
+  const transitionRun = (runId, stage) => {
+    const row = db.prepare("SELECT stage_history_json FROM agent_runs WHERE id = ?").get(runId);
+    if (!row) return;
+    const timestamp = now();
+    const history = safeJson(row.stage_history_json, []);
+    history.push({ stage, at: timestamp });
+    db.prepare("UPDATE agent_runs SET stage = ?, stage_history_json = ?, updated_at = ? WHERE id = ?")
+      .run(stage, JSON.stringify(history), timestamp, runId);
+  };
+
+  const runIsCancelled = (runId) => Boolean(db.prepare("SELECT cancel_requested FROM agent_runs WHERE id = ?").get(runId)?.cancel_requested);
+
+  const executeRun = async (runId) => {
+    const controller = new AbortController();
+    activeJobs.set(runId, controller);
+    try {
+      const row = db.prepare("SELECT * FROM agent_runs WHERE id = ?").get(runId);
+      if (!row || runIsCancelled(runId)) return;
+      const clinicalData = safeJson(row.input_snapshot_json, {});
+      const evidenceCatalog = buildEvidenceCatalog(clinicalData);
+      transitionRun(runId, "calling_model");
+      const model = await runMedicalModel({ clinicalData, evidenceCatalog, config: modelConfig, signal: controller.signal });
+      if (modelConfig.runtime) modelConfig.runtime.modelConnectivity = {
+        ...modelConfig.runtime.modelConnectivity,
+        status: "reachable",
+        code: null,
+        source: "model_request",
+        checkedAt: now(),
+      };
+      if (runIsCancelled(runId)) return;
+      transitionRun(runId, "processing_response");
+      const validation = validateEvidenceCitations(model.output, evidenceCatalog);
+      transitionRun(runId, "validating_evidence");
+      if (runIsCancelled(runId)) return;
+      transitionRun(runId, "saving");
+      const completedAt = now();
+      const history = safeJson(db.prepare("SELECT stage_history_json FROM agent_runs WHERE id = ?").get(runId)?.stage_history_json, []);
+      history.push({ stage: "completed", at: completedAt });
+      db.prepare(`UPDATE agent_runs SET provider = ?, model_version = ?, prompt_version = ?, status = 'Completed', lifecycle_status = 'Completed',
+        stage = 'completed', stage_history_json = ?, output = ?, response_id = ?, usage_json = ?, evidence_links_json = ?,
+        error_message = NULL, updated_at = ?, completed_at = ? WHERE id = ?`)
+        .run(model.provider, model.modelVersion, model.promptVersion, JSON.stringify(history), model.output, model.responseId,
+          JSON.stringify(model.usage || {}), JSON.stringify(validation), completedAt, completedAt, runId);
+      audit(db, row.created_by, "agent_run.completed", "agent_run", runId, {
+        caseId: row.case_id, provider: model.provider, modelVersion: model.modelVersion,
+        verifiedEvidenceCount: validation.evidenceLinks.length, invalidEvidenceCitations: validation.invalidCitations,
+      });
+    } catch (error) {
+      if (runIsCancelled(runId) || error?.name === "RunCancelledError") return;
+      if (modelConfig.runtime && error?.networkFailure) modelConfig.runtime.modelConnectivity = {
+        ...modelConfig.runtime.modelConnectivity,
+        status: "blocked",
+        code: error.code || "NETWORK_ERROR",
+        source: "model_request",
+        checkedAt: now(),
+      };
+      const failedAt = now();
+      const history = safeJson(db.prepare("SELECT stage_history_json FROM agent_runs WHERE id = ?").get(runId)?.stage_history_json, []);
+      history.push({ stage: "failed", at: failedAt });
+      db.prepare(`UPDATE agent_runs SET status = 'Failed', lifecycle_status = 'Failed', stage = 'failed', stage_history_json = ?,
+        error_message = ?, updated_at = ?, completed_at = ? WHERE id = ?`)
+        .run(JSON.stringify(history), error.message, failedAt, failedAt, runId);
+      const row = db.prepare("SELECT case_id, created_by FROM agent_runs WHERE id = ?").get(runId);
+      audit(db, row?.created_by, "agent_run.failed", "agent_run", runId, { caseId: row?.case_id, error: error.message });
+    } finally {
+      activeJobs.delete(runId);
+    }
+  };
+
+  const createRun = (selectedCase, userId) => {
+    const fullClinical = safeJson(selectedCase.clinical_json, {});
+    const visits = Array.isArray(fullClinical.visits) ? fullClinical.visits : [];
+    if (visits.length < 2) throw new Error("At least two visits are required to withhold a reference visit.");
+    const modelVisits = visits.filter((visit, index) => Number(visit.visit_number || index + 1) <= 9).slice(0, 9);
+    const reference = visits.find((visit, index) => Number(visit.visit_number || index + 1) === 10) || visits.at(9) || visits.at(-1);
+    const inputSnapshot = { ...fullClinical, visits: modelVisits, withheldReference: { visitNumber: reference?.visit_number, date: reference?.date } };
+    const runId = id("RUN");
+    const startedAt = now();
+    const history = [{ stage: "preparing_data", at: startedAt }];
+    db.prepare(`INSERT INTO agent_runs (id, case_id, created_by, provider, model_version, prompt_version, status, lifecycle_status,
+      stage, stage_history_json, evidence_links_json, cancel_requested, input_snapshot_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'Running', 'Running', 'preparing_data', ?, '{}', 0, ?, ?, ?)`)
+      .run(runId, selectedCase.id, userId, modelConfig.provider || "deepseek", modelConfig.model || "pending", PROMPT_VERSION,
+        JSON.stringify(history), JSON.stringify(inputSnapshot), startedAt, startedAt);
+    audit(db, userId, "agent_run.started", "agent_run", runId, { caseId: selectedCase.id });
+    setImmediate(() => executeRun(runId));
+    return db.prepare(`SELECT r.*, u.display_name AS creator_name, 0 AS assessment_count
+      FROM agent_runs r JOIN users u ON u.id = r.created_by WHERE r.id = ?`).get(runId);
+  };
 
   return {
     name: "ntu-local-sql-api",
@@ -171,6 +292,7 @@ export function localApiPlugin(root, modelConfig = {}) {
               modelProvider: modelConfig.provider || "deepseek",
               modelConfigured: Boolean(modelConfig.apiKey),
               supportedProviders: supportedProviders(),
+              runtime: modelConfig.runtime || null,
               bootstrapError,
             });
           }
@@ -316,28 +438,41 @@ export function localApiPlugin(root, modelConfig = {}) {
             const caseId = decodeURIComponent(caseRunsMatch[1]);
             const selectedCase = caseAccessRow(db, user, caseId);
             if (!selectedCase) return send(res, 404, { error: "Case not found or not available to this account." });
-            const fullClinical = safeJson(selectedCase.clinical_json, {});
-            const visits = Array.isArray(fullClinical.visits) ? fullClinical.visits : [];
-            if (visits.length < 2) return send(res, 422, { error: "At least two visits are required to withhold a reference visit." });
-            const inputSnapshot = { ...fullClinical, visits: visits.slice(0, -1), withheldReference: { visitNumber: visits.at(-1)?.visit_number, date: visits.at(-1)?.date } };
-            const runId = id("RUN");
-            const startedAt = now();
-            db.prepare(`INSERT INTO agent_runs (id, case_id, created_by, provider, model_version, prompt_version, status, input_snapshot_json, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, 'Running', ?, ?)`)
-              .run(runId, caseId, user.id, modelConfig.provider || "deepseek", modelConfig.model || "pending", PROMPT_VERSION, JSON.stringify(inputSnapshot), startedAt);
             try {
-              const model = await runMedicalModel({ clinicalData: inputSnapshot, config: modelConfig });
-              const completedAt = now();
-              db.prepare(`UPDATE agent_runs SET provider = ?, model_version = ?, prompt_version = ?, status = 'Completed', output = ?, response_id = ?, usage_json = ?, completed_at = ? WHERE id = ?`)
-                .run(model.provider, model.modelVersion, model.promptVersion, model.output, model.responseId, JSON.stringify(model.usage || {}), completedAt, runId);
-              audit(db, user.id, "agent_run.completed", "agent_run", runId, { caseId, provider: model.provider, modelVersion: model.modelVersion });
-              const row = db.prepare(`SELECT r.*, u.display_name AS creator_name, 0 AS assessment_count FROM agent_runs r JOIN users u ON u.id = r.created_by WHERE r.id = ?`).get(runId);
-              return send(res, 201, runDto(row));
+              return send(res, 202, runDto(createRun(selectedCase, user.id)));
             } catch (error) {
-              db.prepare("UPDATE agent_runs SET status = 'Failed', error_message = ?, completed_at = ? WHERE id = ?").run(error.message, now(), runId);
-              audit(db, user.id, "agent_run.failed", "agent_run", runId, { caseId, error: error.message });
-              return send(res, 502, { error: error.message, runId });
+              return send(res, 422, { error: error.message });
             }
+          }
+
+          const runCancelMatch = pathname.match(/^\/runs\/([^/]+)\/cancel$/);
+          if (runCancelMatch && method === "POST") {
+            const runId = decodeURIComponent(runCancelMatch[1]);
+            const row = db.prepare("SELECT * FROM agent_runs WHERE id = ?").get(runId);
+            if (!row || !caseAccessRow(db, user, row.case_id)) return send(res, 404, { error: "Response run not found." });
+            if (user.role !== "admin" && row.created_by !== user.id) return send(res, 403, { error: "Only the run creator can cancel this generation." });
+            if ((row.lifecycle_status || row.status) !== "Running") return send(res, 409, { error: "Only a running generation can be cancelled." });
+            const cancelledAt = now();
+            const history = safeJson(row.stage_history_json, []);
+            history.push({ stage: "cancelled", at: cancelledAt });
+            db.prepare(`UPDATE agent_runs SET status = 'Failed', lifecycle_status = 'Cancelled', stage = 'cancelled', cancel_requested = 1,
+              stage_history_json = ?, error_message = ?, updated_at = ?, completed_at = ? WHERE id = ?`)
+              .run(JSON.stringify(history), "Cancelled by user.", cancelledAt, cancelledAt, runId);
+            activeJobs.get(runId)?.abort(new Error("Cancelled by user."));
+            audit(db, user.id, "agent_run.cancelled", "agent_run", runId, { caseId: row.case_id });
+            const updated = db.prepare(`SELECT r.*, u.display_name AS creator_name, 0 AS assessment_count
+              FROM agent_runs r JOIN users u ON u.id = r.created_by WHERE r.id = ?`).get(runId);
+            return send(res, 200, { run: runDto(updated) });
+          }
+
+          const runRetryMatch = pathname.match(/^\/runs\/([^/]+)\/retry$/);
+          if (runRetryMatch && method === "POST") {
+            const original = db.prepare("SELECT * FROM agent_runs WHERE id = ?").get(decodeURIComponent(runRetryMatch[1]));
+            if (!original) return send(res, 404, { error: "Response run not found." });
+            const selectedCase = caseAccessRow(db, user, original.case_id);
+            if (!selectedCase) return send(res, 404, { error: "Response run not found." });
+            try { return send(res, 202, runDto(createRun(selectedCase, user.id))); }
+            catch (error) { return send(res, 422, { error: error.message }); }
           }
 
           const runMatch = pathname.match(/^\/runs\/([^/]+)$/);

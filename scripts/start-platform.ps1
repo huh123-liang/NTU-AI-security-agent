@@ -3,25 +3,60 @@ param([switch]$NoBrowser)
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RuntimeDir = Join-Path $ProjectRoot ".runtime"
+$InstanceFile = Join-Path $RuntimeDir "platform-instance.json"
 $PidFile = Join-Path $RuntimeDir "platform.pid"
 $PortFile = Join-Path $RuntimeDir "platform.port"
 $OutputLog = Join-Path $RuntimeDir "platform.log"
 $ErrorLog = Join-Path $RuntimeDir "platform-error.log"
 $BasePort = 4190
-$ScanPorts = @(4180, 4181) + @(4190..4199)
 
-function Test-Health([int]$Port) {
+function Get-Health([int]$Port) {
   $client = New-Object System.Net.Sockets.TcpClient
   try {
     $pending = $client.BeginConnect("127.0.0.1", $Port, $null, $null)
-    if (-not $pending.AsyncWaitHandle.WaitOne(180)) { return $false }
+    if (-not $pending.AsyncWaitHandle.WaitOne(220)) { return $null }
     $client.EndConnect($pending)
-  } catch { return $false }
+  } catch { return $null }
   finally { $client.Dispose() }
   try {
     $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/v1/health" -TimeoutSec 2
-    return $health.status -in @("ok", "degraded") -and $health.database -eq "SQLite"
+    if ($health.status -in @("ok", "degraded") -and $health.database -eq "SQLite") { return $health }
+    return $null
+  } catch { return $null }
+}
+
+function Get-ManagedInstance {
+  if (-not (Test-Path -LiteralPath $InstanceFile)) { return $null }
+  try {
+    $instance = Get-Content -LiteralPath $InstanceFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $instance.instanceId -or -not $instance.processId -or -not $instance.port) { return $null }
+    if ([string]$instance.projectRoot -ne $ProjectRoot) { return $null }
+    $process = Get-Process -Id ([int]$instance.processId) -ErrorAction SilentlyContinue
+    if (-not $process -or $process.ProcessName -ne "node") { return $null }
+    $health = Get-Health ([int]$instance.port)
+    if (-not $health -or -not $health.runtime) { return $null }
+    if ([string]$health.runtime.instanceId -ne [string]$instance.instanceId) { return $null }
+    if ([int]$health.runtime.processId -ne [int]$instance.processId) { return $null }
+    if ([string]$health.runtime.projectRoot -ne $ProjectRoot) { return $null }
+    return $instance
+  } catch { return $null }
+}
+
+function Remove-StaleRuntimeIdentity {
+  foreach ($file in @($InstanceFile, $PidFile, $PortFile)) {
+    Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Test-DeepSeekHttps {
+  $client = New-Object System.Net.Sockets.TcpClient
+  try {
+    $pending = $client.BeginConnect("api.deepseek.com", 443, $null, $null)
+    if (-not $pending.AsyncWaitHandle.WaitOne(1800)) { return $false }
+    $client.EndConnect($pending)
+    return $true
   } catch { return $false }
+  finally { $client.Dispose() }
 }
 
 function Find-Node {
@@ -75,25 +110,17 @@ Write-Host "Project: $ProjectRoot"
 
 New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
 
-if (Test-Path -LiteralPath $PortFile) {
-  $savedPort = [int](Get-Content -LiteralPath $PortFile -Raw -ErrorAction SilentlyContinue)
-  if ($savedPort -and (Test-Health $savedPort)) {
-    Write-Host "Platform is already running on port $savedPort." -ForegroundColor Green
-    Open-Platform $savedPort
-    exit 0
-  }
+$managedInstance = Get-ManagedInstance
+if ($managedInstance) {
+  Write-Host "Verified platform instance is already running on port $($managedInstance.port)." -ForegroundColor Green
+  Open-Platform ([int]$managedInstance.port)
+  exit 0
 }
 
-foreach ($port in $ScanPorts) {
-  if (Test-Health $port) {
-    Write-Host "Platform is already running on port $port." -ForegroundColor Green
-    $port | Set-Content -LiteralPath $PortFile -Encoding ASCII
-    Open-Platform $port
-    exit 0
-  }
+if ((Test-Path -LiteralPath $InstanceFile) -or (Test-Path -LiteralPath $PidFile) -or (Test-Path -LiteralPath $PortFile)) {
+  Write-Host "Removing stale runtime records; unknown services will not be reused." -ForegroundColor Yellow
 }
-
-Remove-Item -LiteralPath $PortFile -Force -ErrorAction SilentlyContinue
+Remove-StaleRuntimeIdentity
 
 $NodeExe = Find-Node
 if (-not $NodeExe) {
@@ -126,12 +153,17 @@ $ServerScript = Join-Path $ProjectRoot "scripts\serve.mjs"
 if (-not (Test-Path -LiteralPath $ServerScript)) { throw "Server entry point is missing: $ServerScript" }
 # Use a path relative to WorkingDirectory so spaces in the project path cannot split the Node argument.
 $process = Start-Process -FilePath $NodeExe -ArgumentList @("scripts\serve.mjs", [string]$BasePort) -WorkingDirectory $ProjectRoot -WindowStyle Hidden -RedirectStandardOutput $OutputLog -RedirectStandardError $ErrorLog -PassThru
-$process.Id | Set-Content -LiteralPath $PidFile -Encoding ASCII
 
 $readyPort = $null
 for ($attempt = 1; $attempt -le 80; $attempt++) {
   Start-Sleep -Milliseconds 500
-  foreach ($port in $BasePort..($BasePort + 9)) { if (Test-Health $port) { $readyPort = $port; break } }
+  foreach ($port in $BasePort..($BasePort + 9)) {
+    $health = Get-Health $port
+    if ($health -and $health.runtime -and [int]$health.runtime.processId -eq $process.Id -and [string]$health.runtime.projectRoot -eq $ProjectRoot) {
+      $readyPort = $port
+      break
+    }
+  }
   if ($readyPort -or $process.HasExited) { break }
 }
 
@@ -142,12 +174,17 @@ if (-not $readyPort) {
     Get-Content -LiteralPath $ErrorLog -Tail 12
   }
   Write-Host "Full log: $ErrorLog"
-  Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+  Remove-StaleRuntimeIdentity
   Read-Host "Press Enter to close"
   exit 1
 }
 
-$readyPort | Set-Content -LiteralPath $PortFile -Encoding ASCII
 Write-Host "Ready: http://127.0.0.1:$readyPort/" -ForegroundColor Green
+if (Test-DeepSeekHttps) {
+  Write-Host "DeepSeek network check: reachable." -ForegroundColor Green
+} else {
+  Write-Host "DeepSeek network check: blocked on HTTPS port 443." -ForegroundColor Yellow
+  Write-Host "The interface will open, but model generation requires firewall, proxy or network access to api.deepseek.com."
+}
 Open-Platform $readyPort
 exit 0

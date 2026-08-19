@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — 2026-08-19
+
+- Added cryptographic runtime instance IDs and server-owned PID/port/project identity records.
+- Hardened one-click launch so it never reuses an unknown healthy port or stale PID; occupied ports now fall through safely to 4191–4199.
+- Hardened stop behavior to terminate only a verified instance belonging to this project.
+- Added a DeepSeek HTTPS preflight warning and actionable network failure messages.
+- Added persisted asynchronous model stages, cancellation, retry, restart interruption recovery and Visit 1–9 evidence validation.
+- Added the selected Evidence Lens workspace interactions and restrained login particle field.
+- Fixed evidence-result deserialization so canonical and legacy run records retain their interactive citations instead of being mislabelled as unverified.
+- Added bounded exponential retry for transient model-network failures and made health status reflect the latest real model request.
+- Expanded the automated suite from seven to eleven tests.
+
 ## v1.0.0-mvp2 — 2026-08-18
 
 - Rebuilt the prototype around a real local SQLite database with hashed accounts, sessions, RBAC, audit events and original-source retention.
