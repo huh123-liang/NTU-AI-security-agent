@@ -56,6 +56,10 @@ function migrateStudyGovernance(db) {
   ensureColumn(db, "agent_runs", "output_hash", "TEXT");
   ensureColumn(db, "agent_runs", "aggregation_config_json", "TEXT NOT NULL DEFAULT '{}'");
   db.prepare("UPDATE agent_runs SET study_status = COALESCE(NULLIF(study_status, ''), 'Sandbox')").run();
+  // A failed pre-generation must not remain "pending" forever, otherwise the
+  // Admin UI correctly prevents a duplicate answer but incorrectly hides retry.
+  db.prepare(`UPDATE agent_runs SET study_status = 'Official failed'
+    WHERE study_status = 'Official pending' AND (status = 'Failed' OR lifecycle_status IN ('Failed', 'Cancelled', 'Interrupted'))`).run();
   db.exec("CREATE INDEX IF NOT EXISTS idx_runs_case_study ON agent_runs(case_id, study_status)");
 }
 

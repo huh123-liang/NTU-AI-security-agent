@@ -169,6 +169,7 @@ Live local database snapshot on 24 August 2026:
 ### 4.10 Official-Run study mode and usability update — 30 August 2026
 
 - [x] Admin-only **Official responses** page: generate one fixed answer for a selected case before doctor scoring begins.
+- [x] Failed Official Runs are explicitly labelled **Official failed** and expose an Admin-only **Retry official** action; failed attempts remain in the audit history and never block a future retry.
 - [x] A completed replacement automatically archives the previous Official Run; historical answers and their assessments remain auditable and are never mixed with the replacement.
 - [x] Doctors see only the current Official Run in the workspace; Doctor-side New run, retry and arbitrary-run scoring are removed.
 - [x] Finalization is restricted to one Official Run and is blocked until at least **three distinct Doctors** have submitted. Drafts remain excluded.

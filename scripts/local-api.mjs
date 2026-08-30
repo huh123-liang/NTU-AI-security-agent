@@ -264,6 +264,7 @@ export function localApiPlugin(root, modelConfig = {}) {
       const history = safeJson(db.prepare("SELECT stage_history_json FROM agent_runs WHERE id = ?").get(runId)?.stage_history_json, []);
       history.push({ stage: "failed", at: failedAt });
       db.prepare(`UPDATE agent_runs SET status = 'Failed', lifecycle_status = 'Failed', stage = 'failed', stage_history_json = ?,
+        study_status = CASE WHEN study_status = 'Official pending' THEN 'Official failed' ELSE study_status END,
         error_message = ?, updated_at = ?, completed_at = ? WHERE id = ?`)
         .run(JSON.stringify(history), error.message, failedAt, failedAt, runId);
       const row = db.prepare("SELECT case_id, created_by FROM agent_runs WHERE id = ?").get(runId);
@@ -446,7 +447,7 @@ export function localApiPlugin(root, modelConfig = {}) {
               (SELECT COUNT(DISTINCT a.reviewer_id) FROM assessments a WHERE a.run_id = r.id AND a.status = 'Submitted') AS submitted_doctors
               FROM cases c JOIN datasets d ON d.id = c.dataset_id
               LEFT JOIN agent_runs r ON r.id = (SELECT r2.id FROM agent_runs r2 WHERE r2.case_id = c.id
-                AND r2.study_status IN ('Official', 'Official pending') ORDER BY CASE r2.study_status WHEN 'Official' THEN 0 ELSE 1 END, r2.created_at DESC LIMIT 1)
+                AND r2.study_status IN ('Official', 'Official pending', 'Official failed') ORDER BY CASE r2.study_status WHEN 'Official' THEN 0 WHEN 'Official pending' THEN 1 ELSE 2 END, r2.created_at DESC LIMIT 1)
               WHERE (? = '' OR c.dataset_id = ?) AND (c.patient_id LIKE ? OR c.condition_summary LIKE ?)
               ORDER BY c.patient_id LIMIT 100`).all(datasetId, datasetId, search, search);
             return send(res, 200, { items: rows.map((row) => ({
@@ -506,6 +507,7 @@ export function localApiPlugin(root, modelConfig = {}) {
             const history = safeJson(row.stage_history_json, []);
             history.push({ stage: "cancelled", at: cancelledAt });
             db.prepare(`UPDATE agent_runs SET status = 'Failed', lifecycle_status = 'Cancelled', stage = 'cancelled', cancel_requested = 1,
+              study_status = CASE WHEN study_status = 'Official pending' THEN 'Official failed' ELSE study_status END,
               stage_history_json = ?, error_message = ?, updated_at = ?, completed_at = ? WHERE id = ?`)
               .run(JSON.stringify(history), "Cancelled by user.", cancelledAt, cancelledAt, runId);
             activeJobs.get(runId)?.abort(new Error("Cancelled by user."));
