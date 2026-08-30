@@ -98,7 +98,9 @@ test("run lifecycle columns are available in the real SQLite schema", () => {
   try {
     const db = getDatabase(root);
     const columns = new Set(db.prepare("PRAGMA table_info(agent_runs)").all().map((item) => item.name));
-    for (const column of ["lifecycle_status", "stage", "stage_history_json", "evidence_links_json", "cancel_requested", "updated_at"]) assert.equal(columns.has(column), true);
+    for (const column of ["lifecycle_status", "stage", "stage_history_json", "evidence_links_json", "cancel_requested", "updated_at", "study_status", "output_hash", "aggregation_config_json"]) assert.equal(columns.has(column), true);
+    const userColumns = new Set(db.prepare("PRAGMA table_info(users)").all().map((item) => item.name));
+    assert.equal(userColumns.has("access_status"), true);
   } finally { resetDatabaseForTests(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -117,7 +119,7 @@ test("the supplied ZIP imports complete cases and quarantines every incomplete m
   } finally { resetDatabaseForTests(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("three independent doctor scores support weighted aggregation and immutable locking", () => {
+test("three independent doctor scores use the Official Run preset and support immutable locking", () => {
   const root = testRoot();
   try {
     const db = getDatabase(root);
@@ -132,7 +134,7 @@ test("three independent doctor scores support weighted aggregation and immutable
       return { id: accountId, score };
     });
     const runId = id("RUN");
-    db.prepare(`INSERT INTO agent_runs (id,case_id,created_by,provider,model_version,prompt_version,status,input_snapshot_json,output,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(runId, caseId, doctors[0].id, "DeepSeek", "deepseek-v4-pro", "test", "Completed", "{}", "plan", now(), now());
+    db.prepare(`INSERT INTO agent_runs (id,case_id,created_by,provider,model_version,prompt_version,status,study_status,aggregation_config_json,input_snapshot_json,output,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(runId, caseId, doctors[0].id, "DeepSeek", "deepseek-v4-pro", "test", "Completed", "Official", '{"version":"official-preset-v1","doctorWeights":{},"dimensionWeights":{"accuracy":1,"completeness":1,"communication":1,"context":1,"instruction":1,"safety":1}}', "{}", "plan", now(), now());
     const assessmentIds = doctors.map((doctor) => {
       const assessmentId = id("ASMT");
       db.prepare(`INSERT INTO assessments (id,run_id,case_id,reviewer_id,status,overall_score,safety_issue,reason_tags_json,case_feedback,version,locked,created_at,updated_at,submitted_at) VALUES (?,?,?,?,?,?,?,?,?,1,0,?,?,?)`).run(assessmentId, runId, caseId, doctor.id, "Submitted", doctor.score, "No", "[]", "", now(), now(), now());
@@ -143,11 +145,27 @@ test("three independent doctor scores support weighted aggregation and immutable
     const result = previewAggregation(db, { level: "run", targetId: runId, method: "weighted", doctorWeights, includedAssessmentIds: assessmentIds });
     assert.equal(result.sampleSize, 3);
     assert.equal(result.reviewerCount, 3);
-    assert.equal(result.finalScore, 4.33);
+    assert.equal(result.finalScore, 4);
     const zeroExcluded = previewAggregation(db, { level: "run", targetId: runId, method: "weighted", doctorWeights: { [doctors[0].id]: 0, [doctors[1].id]: 1, [doctors[2].id]: 0 } });
     assert.equal(zeroExcluded.finalScore, 4);
     const final = finalizeAggregation(db, admin.id, { level: "run", targetId: runId, method: "weighted", doctorWeights, includedAssessmentIds: assessmentIds });
     assert.equal(final.locked, true);
     assert.equal(Number(db.prepare("SELECT COUNT(*) AS count FROM assessments WHERE locked = 1").get().count), 3);
+  } finally { resetDatabaseForTests(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("finalization blocks fewer than three distinct Doctors", () => {
+  const root = testRoot();
+  try {
+    const db = getDatabase(root);
+    const admin = db.prepare("SELECT id FROM users WHERE role = 'admin'").get();
+    const datasetId = id("DATA"); const caseId = id("CASE"); const doctorId = id("USR"); const runId = id("RUN"); const assessmentId = id("ASMT"); const secret = hashPassword("Doctor123!");
+    db.prepare(`INSERT INTO datasets (id,owner_id,name,source_filename,source_path,source_format,source_sha256,status,visibility,declared_count,valid_count,quarantined_count,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(datasetId, admin.id, "QA", "qa.json", "qa.json", "JSON", "hash", "Approved", "shared", 1, 1, 0, now());
+    db.prepare(`INSERT INTO cases (id,dataset_id,patient_id,condition_summary,conditions_json,visit_count,clinical_json,reference_visit_json,source_entry,source_sha256,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(caseId, datasetId, "QA-002", "Chronic care", "[]", 10, "{}", "{}", "patient.json", "hash", now());
+    db.prepare(`INSERT INTO users (id,role,display_name,email,password_hash,password_salt,active,access_status,created_at,updated_at) VALUES (?,?,?,?,?,?,1,'active',?,?)`).run(doctorId, "doctor", "Doctor 1", "doctor-one@test.local", secret.hash, secret.salt, now(), now());
+    db.prepare(`INSERT INTO agent_runs (id,case_id,created_by,provider,model_version,prompt_version,status,study_status,input_snapshot_json,output,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(runId, caseId, doctorId, "DeepSeek", "model", "test", "Completed", "Official", "{}", "plan", now(), now());
+    db.prepare(`INSERT INTO assessments (id,run_id,case_id,reviewer_id,status,overall_score,safety_issue,reason_tags_json,case_feedback,version,locked,created_at,updated_at,submitted_at) VALUES (?,?,?,?,?,?,?,?,?,1,0,?,?,?)`).run(assessmentId, runId, caseId, doctorId, "Submitted", 4, "No", "[]", "", now(), now(), now());
+    for (const criterion of CRITERIA) db.prepare(`INSERT INTO criterion_scores (id,assessment_id,criterion_key,score,feedback,tags_json,custom_tags_json) VALUES (?,?,?,?,?,?,?)`).run(id("CRIT"), assessmentId, criterion.key, 4, "", "[]", "[]");
+    assert.throws(() => finalizeAggregation(db, admin.id, { level: "run", targetId: runId, method: "mean", includedAssessmentIds: [assessmentId] }), /At least three distinct Doctors/);
   } finally { resetDatabaseForTests(); rmSync(root, { recursive: true, force: true }); }
 });

@@ -1,4 +1,4 @@
-import { CRITERIA, DEFAULT_DIMENSION_WEIGHTS, round } from "./domain.mjs";
+import { CRITERIA, DEFAULT_DIMENSION_WEIGHTS, round, safeJson } from "./domain.mjs";
 import { audit, id, now, withTransaction } from "./database.mjs";
 
 const mean = (values) => values.reduce((sum, value) => sum + value, 0) / Math.max(values.length, 1);
@@ -23,7 +23,7 @@ function assessmentRows(db, level, targetId) {
     JOIN users u ON u.id = a.reviewer_id
     JOIN agent_runs r ON r.id = a.run_id
     JOIN cases c ON c.id = a.case_id
-    WHERE a.status = 'Submitted' AND ${filter[0]}
+    WHERE a.status = 'Submitted' AND r.study_status = 'Official' AND ${filter[0]}
     ORDER BY a.updated_at`).all(filter[1]);
 }
 
@@ -36,8 +36,9 @@ export function previewAggregation(db, payload) {
   if (included?.size) assessments = assessments.filter((item) => included.has(item.id));
   if (!assessments.length) throw new Error("No submitted assessments are available for this target.");
 
-  const doctorWeights = payload.doctorWeights && typeof payload.doctorWeights === "object" ? payload.doctorWeights : {};
-  const dimensionWeights = { ...DEFAULT_DIMENSION_WEIGHTS, ...(payload.dimensionWeights || {}) };
+  const savedConfig = level === "run" ? safeJson(db.prepare("SELECT aggregation_config_json FROM agent_runs WHERE id = ?").get(targetId)?.aggregation_config_json, {}) : {};
+  const doctorWeights = savedConfig.doctorWeights && typeof savedConfig.doctorWeights === "object" ? savedConfig.doctorWeights : {};
+  const dimensionWeights = { ...DEFAULT_DIMENSION_WEIGHTS, ...(savedConfig.dimensionWeights || {}) };
   const criteriaByAssessment = new Map();
   for (const assessment of assessments) {
     const rows = db.prepare("SELECT criterion_key, score FROM criterion_scores WHERE assessment_id = ?").all(assessment.id);
@@ -89,6 +90,7 @@ export function previewAggregation(db, payload) {
     includedAssessmentIds: assessments.map((item) => item.id),
     doctorWeights,
     dimensionWeights,
+    aggregationConfigVersion: savedConfig.version || "official-preset-v1",
     criteria: criterionResults,
     finalScore: round(finalScore),
   };
@@ -96,6 +98,8 @@ export function previewAggregation(db, payload) {
 
 export function finalizeAggregation(db, actorId, payload) {
   const result = previewAggregation(db, payload);
+  if (result.level !== "run" || result.responseRunCount !== 1) throw new Error("Final results must be created for one Official Run.");
+  if (result.reviewerCount < 3) throw new Error("At least three distinct Doctors must submit assessments before a Final Result can be locked.");
   const finalizationId = id("FIN");
   withTransaction(db, () => {
     db.prepare(`INSERT INTO finalizations (id, level, target_id, method, doctor_weights_json, dimension_weights_json,

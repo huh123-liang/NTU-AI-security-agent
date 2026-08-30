@@ -25,8 +25,8 @@ function seedAdmin(db) {
   const timestamp = now();
   const credentials = hashPassword("123");
   const adminId = id("USR");
-  db.prepare(`INSERT INTO users (id, display_name, email, password_hash, password_salt, role, active, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, 'admin', 1, ?, ?)`)
+  db.prepare(`INSERT INTO users (id, display_name, email, password_hash, password_salt, role, active, access_status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'admin', 1, 'active', ?, ?)`)
     .run(adminId, "Platform Administrator", "admin@ntu-demo.local", credentials.hash, credentials.salt, timestamp, timestamp);
   return adminId;
 }
@@ -49,6 +49,16 @@ function migrateRunLifecycle(db) {
   db.prepare("UPDATE agent_runs SET updated_at = COALESCE(updated_at, completed_at, created_at)").run();
 }
 
+function migrateStudyGovernance(db) {
+  ensureColumn(db, "users", "access_status", "TEXT NOT NULL DEFAULT 'active'");
+  db.prepare("UPDATE users SET access_status = CASE WHEN active = 1 THEN COALESCE(NULLIF(access_status, ''), 'active') ELSE 'deactivated' END").run();
+  ensureColumn(db, "agent_runs", "study_status", "TEXT NOT NULL DEFAULT 'Sandbox'");
+  ensureColumn(db, "agent_runs", "output_hash", "TEXT");
+  ensureColumn(db, "agent_runs", "aggregation_config_json", "TEXT NOT NULL DEFAULT '{}'");
+  db.prepare("UPDATE agent_runs SET study_status = COALESCE(NULLIF(study_status, ''), 'Sandbox')").run();
+  db.exec("CREATE INDEX IF NOT EXISTS idx_runs_case_study ON agent_runs(case_id, study_status)");
+}
+
 export function getDatabase(root) {
   if (instance?.root === root) return instance.db;
   const dataDir = path.join(root, ".data");
@@ -59,6 +69,7 @@ export function getDatabase(root) {
   if (!existsSync(schemaPath)) throw new Error("SQL schema is missing.");
   db.exec(readFileSync(schemaPath, "utf8"));
   migrateRunLifecycle(db);
+  migrateStudyGovernance(db);
   seedAdmin(db);
   db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now());
   instance = { root, db };
@@ -73,6 +84,7 @@ export function publicUser(row) {
     email: row.email,
     role: row.role,
     active: Boolean(row.active),
+    accessStatus: row.access_status || (row.active ? "active" : "deactivated"),
     createdAt: row.created_at,
   };
 }
@@ -91,7 +103,7 @@ export function getAuthenticatedUser(db, req) {
   const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
   if (!token) return null;
   const row = db.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
-    WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1`).get(sha256(token), now());
+    WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1 AND COALESCE(u.access_status, 'active') != 'deactivated'`).get(sha256(token), now());
   return publicUser(row);
 }
 

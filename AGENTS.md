@@ -18,6 +18,12 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 - Generation motion must reflect persisted backend stages. Cancellation preserves a Cancelled run; retry creates a new run; an unfinished run becomes Interrupted after a process restart.
 - Preserve source traceability: original upload, source filename, SHA-256, patient JSON path and reference visit must remain inspectable.
 - The supplied Synthea-SG ZIP yields 369 valid cases, 33 truncated JSON files and 98 absent files. Never report all 402 present files as valid and never fabricate the 131 quarantined records.
+- Study-mode fairness rule: an Admin pre-generates one Official Run per case. Doctors can see and score only that current locked answer; regenerating archives the prior official run and never mixes its assessments with the replacement.
+- A Final Result is Admin-only and can be locked only after at least three distinct Doctors have submitted scores for the same Official Run. Drafts never aggregate; the equal-weight preset is recorded with the official answer before score review.
+- Doctor context layout uses four simultaneous small-multiple trends (BP, HbA1c, eGFR, LDL) above a compact, selectable visit strip. Rule-based research signals may highlight source-backed changes, but must never be presented as clinical advice.
+- The Doctor-facing evidence view is human-readable clinical-record format. Raw JSON is retained for Admin/development audit only.
+- Admin evaluation review is doctor-first: Doctor → assessed case/official run → optional 2–4 detailed or 5+ matrix comparison of assessments for that exact Official Run. The clinician chatbot is deferred.
+- Doctor accounts use Active, Scoring suspended, and Deactivated states. Never delete a user or assessment; preserve audit history.
 
 When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
 

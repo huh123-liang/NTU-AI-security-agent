@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ChartBar, CheckCircle, Database, Eye, FileText, Gauge, LockKey, Sparkle,
-  MagnifyingGlass, ShieldCheck, SlidersHorizontal, UsersThree, WarningCircle,
+  MagnifyingGlass, ShieldCheck, SlidersHorizontal, UsersThree, WarningCircle, Robot, ArrowRight, ArrowsClockwise,
 } from "@phosphor-icons/react";
 import { api } from "./api.js";
 import { CRITERIA, dateTime, titleCase } from "./constants.js";
@@ -11,6 +11,7 @@ export const adminNav = [
   { key: "overview", label: "Overview", icon: Gauge },
   { key: "users", label: "Doctor accounts", icon: UsersThree },
   { key: "datasets", label: "Dataset governance", icon: Database },
+  { key: "official", label: "Official responses", icon: Robot },
   { key: "evaluations", label: "All evaluations", icon: FileText },
   { key: "aggregation", label: "Aggregation studio", icon: SlidersHorizontal },
   { key: "results", label: "Final results", icon: LockKey },
@@ -32,6 +33,7 @@ export function AdminPortal({ route, navigate, notify }) {
   if (route === "overview") return <AdminOverview navigate={navigate} />;
   if (route === "users") return <DoctorAccounts notify={notify} />;
   if (route === "datasets") return <DatasetGovernance notify={notify} />;
+  if (route === "official") return <OfficialRuns notify={notify} />;
   if (route === "evaluations") return <EvaluationRegister />;
   if (route === "aggregation") return <AggregationStudio notify={notify} navigate={navigate} />;
   if (route === "results") return <FinalResults />;
@@ -55,7 +57,7 @@ function AdminOverview({ navigate }) {
     </div>
     <div className="admin-overview-grid">
       <section className="surface workflow-card"><div className="section-heading"><div><h2>Governance workflow</h2><p>The current local operating sequence.</p></div></div>
-        {["Doctor registers and selects an approved dataset", "DeepSeek receives visits 1–9 and generates a visit-10 plan", "Doctors independently score the same or different model runs", "Admin reviews evidence and chooses the aggregation rule", "Final result locks every included assessment"].map((label, index) => <div className="workflow-row" key={label}><span>{index + 1}</span><p>{label}</p>{index === 4 && <LockKey size={17} />}</div>)}
+        {["Doctor registers and selects an approved dataset", "Admin pre-generates one Official Run from visits 1–9", "Doctors independently score the same fixed answer", "Admin previews the governed result", "Three or more submitted doctors enable the final lock"].map((label, index) => <div className="workflow-row" key={label}><span>{index + 1}</span><p>{label}</p>{index === 4 && <LockKey size={17} />}</div>)}
       </section>
       <section className="surface governance-card"><div className="section-heading"><div><h2>Data integrity status</h2><p>Imported Synthea-SG cohort.</p></div></div>
         <div className="integrity-score"><strong>{m.validCases}</strong><span><b>valid longitudinal cases</b><small>Actual records accepted without fabrication</small></span></div>
@@ -69,13 +71,13 @@ function AdminOverview({ navigate }) {
 function DoctorAccounts({ notify }) {
   const resource = useResource(api.adminUsers, []);
   const [query, setQuery] = useState("");
-  const toggle = async (user) => { try { await api.setUserActive(user.id, !user.active); notify(`${user.displayName} is now ${user.active ? "inactive" : "active"}.`); resource.refresh(); } catch (error) { notify(error.message); } };
+  const updateStatus = async (user, accessStatus) => { try { await api.setUserAccessStatus(user.id, accessStatus); notify(`${user.displayName}: ${accessStatus.replaceAll("_", " ")}.`); resource.refresh(); } catch (error) { notify(error.message); } };
   if (resource.loading) return <LoadingState label="Loading local accounts…" />;
   if (resource.error) return <ErrorState message={resource.error} retry={resource.refresh} />;
   const users = resource.value.items.filter((item) => item.role === "doctor" && `${item.displayName} ${item.email}`.toLowerCase().includes(query.toLowerCase()));
-  return <div className="content-page"><PageHeader eyebrow="ACCESS GOVERNANCE" title="Doctor accounts" copy="Doctors self-register and receive immediate local access. Administrators can disable an account without deleting its audit history." />
+  return <div className="content-page"><PageHeader eyebrow="ACCESS GOVERNANCE" title="Doctor accounts" copy="Doctors self-register and receive immediate local access. Preserve history while choosing active, scoring-suspended, or deactivated access." />
     <div className="toolbar surface"><label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search doctor or email" /></label><span className="table-count">{users.length} doctor accounts</span></div>
-    <section className="surface table-surface"><table className="data-table"><thead><tr><th>Doctor</th><th>Status</th><th>Assessments</th><th>Datasets</th><th>Registered</th><th>Account control</th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><b>{user.displayName}</b><small>{user.email}</small></td><td><StatusBadge>{user.active ? "Active" : "Inactive"}</StatusBadge></td><td>{user.assessmentCount}</td><td>{user.datasetCount}</td><td>{dateTime(user.createdAt)}</td><td><button className={user.active ? "danger-button compact" : "secondary-button compact"} onClick={() => toggle(user)}>{user.active ? "Deactivate" : "Reactivate"}</button></td></tr>)}</tbody></table>{!users.length && <EmptyState icon={UsersThree} title="No doctor accounts" copy="A doctor can create the first account from the unified login screen." />}</section>
+    <section className="surface table-surface"><table className="data-table"><thead><tr><th>Doctor</th><th>Status</th><th>Assessments</th><th>Datasets</th><th>Registered</th><th>Account control</th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><b>{user.displayName}</b><small>{user.email}</small></td><td><StatusBadge tone={user.accessStatus === "active" ? "success" : user.accessStatus === "scoring_suspended" ? "warning" : "danger"}>{titleCase((user.accessStatus || "deactivated").replaceAll("_", " "))}</StatusBadge></td><td>{user.assessmentCount}</td><td>{user.datasetCount}</td><td>{dateTime(user.createdAt)}</td><td><div className="account-actions"><button className="secondary-button compact" disabled={user.accessStatus === "active"} onClick={() => updateStatus(user, "active")}>Activate</button><button className="secondary-button compact" disabled={user.accessStatus === "scoring_suspended"} onClick={() => updateStatus(user, "scoring_suspended")}>Suspend scoring</button><button className="danger-button compact" disabled={user.accessStatus === "deactivated"} onClick={() => updateStatus(user, "deactivated")}>Deactivate</button></div></td></tr>)}</tbody></table>{!users.length && <EmptyState icon={UsersThree} title="No doctor accounts" copy="A doctor can create the first account from the unified login screen." />}</section>
   </div>;
 }
 
@@ -100,18 +102,51 @@ function DatasetGovernance({ notify }) {
   </div>;
 }
 
+function OfficialRuns({ notify }) {
+  const datasets = useResource(api.datasets, []);
+  const [datasetId, setDatasetId] = useState("");
+  const [search, setSearch] = useState("");
+  const [state, setState] = useState({ loading: false, error: "", items: [] });
+  const [busyId, setBusyId] = useState("");
+  useEffect(() => { if (!datasetId && datasets.value?.items?.[0]) setDatasetId(datasets.value.items[0].id); }, [datasets.value, datasetId]);
+  const refresh = () => { if (!datasetId) return; setState((current) => ({ ...current, loading: true, error: "" })); api.officialRuns({ datasetId, search }).then((result) => setState({ loading: false, error: "", items: result.items })).catch((error) => setState({ loading: false, error: error.message, items: [] })); };
+  useEffect(() => { const timer = window.setTimeout(refresh, 120); return () => window.clearTimeout(timer); }, [datasetId, search]);
+  useEffect(() => { if (!state.items.some((item) => item.officialRun?.status === "Running")) return undefined; const timer = window.setInterval(refresh, 1200); return () => window.clearInterval(timer); }, [state.items, datasetId, search]);
+  const generate = async (item) => { const replace = item.officialRun?.studyStatus === "Official"; if (replace && !window.confirm("Regenerate this Official Run? The existing answer will be archived and its assessments will remain separate.")) return; setBusyId(item.id); try { await api.generateOfficialRun(item.id); notify(replace ? "Replacement Official Run started; the prior answer will be archived only after completion." : "Official Run generation started."); refresh(); } catch (error) { notify(error.message); } finally { setBusyId(""); } };
+  if (datasets.loading) return <LoadingState label="Loading study cohorts…" />;
+  if (datasets.error) return <ErrorState message={datasets.error} retry={datasets.refresh} />;
+  return <div className="content-page"><PageHeader eyebrow="STUDY ANSWER GOVERNANCE" title="Official AI responses" copy="Generate one fixed response per case before doctors enter the workspace. Replacements archive the old answer, preserving its audit trail and separate scores." />
+    <div className="toolbar surface"><label className="search-field"><MagnifyingGlass size={17} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search patient or condition" /></label><select className="dataset-select" value={datasetId} onChange={(event) => setDatasetId(event.target.value)}>{datasets.value.items.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
+    {state.loading && !state.items.length ? <LoadingState label="Loading study cases…" /> : state.error ? <ErrorState message={state.error} retry={refresh} /> : <section className="surface table-surface"><table className="data-table"><thead><tr><th>Case</th><th>Conditions</th><th>Official Run</th><th>Independent scores</th><th /></tr></thead><tbody>{state.items.map((item) => <tr key={item.id}><td><b>{item.patientId}</b><small>{item.age || "—"} years · {titleCase(item.sex)}</small></td><td>{item.condition}</td><td>{item.officialRun ? <><StatusBadge tone={item.officialRun.studyStatus === "Official" ? "success" : "warning"}>{item.officialRun.studyStatus}</StatusBadge><small>{item.officialRun.status} · {item.officialRun.modelVersion}<br />{item.officialRun.outputHash ? `Hash ${item.officialRun.outputHash.slice(0, 10)}…` : "Answer not yet saved"}</small></> : <span className="muted">Not generated</span>}</td><td><b>{item.officialRun?.submittedDoctors || 0} / 3 Doctors</b><small>{item.officialRun?.submittedDoctors >= 3 ? "Eligible for finalization" : "Minimum required before final lock"}</small></td><td><button className={item.officialRun?.studyStatus === "Official" ? "secondary-button compact" : "primary-button compact"} disabled={Boolean(busyId) || item.officialRun?.studyStatus === "Official pending"} onClick={() => generate(item)}>{busyId === item.id ? <ArrowsClockwise className="spin" size={14} /> : <Robot size={14} />}{item.officialRun?.studyStatus === "Official" ? "Regenerate" : "Generate official"}</button></td></tr>)}</tbody></table></section>}
+  </div>;
+}
+
 function EvaluationRegister() {
   const resource = useResource(api.assessments, []);
   const [query, setQuery] = useState("");
+  const [doctorId, setDoctorId] = useState("");
   const [selected, setSelected] = useState(null);
+  const [comparison, setComparison] = useState(null);
   if (resource.loading) return <LoadingState label="Loading clinician evaluations…" />;
   if (resource.error) return <ErrorState message={resource.error} retry={resource.refresh} />;
-  const items = resource.value.items.filter((item) => `${item.reviewerName} ${item.patientId} ${item.datasetName}`.toLowerCase().includes(query.toLowerCase()));
-  return <div className="content-page"><PageHeader eyebrow="GROUND TRUTH REGISTER" title="All clinician evaluations" copy="Inspect scores and dimension-level reasoning. These records are invisible to peer doctors." />
-    <div className="toolbar surface"><label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search doctor, patient or dataset" /></label><span className="table-count">{items.length} records</span></div>
-    <section className="surface table-surface"><table className="data-table"><thead><tr><th>Reviewer</th><th>Patient / dataset</th><th>Model run</th><th>Overall</th><th>Status</th><th>Updated</th><th /></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td><b>{item.reviewerName}</b><small>{item.reviewerEmail}</small></td><td><b>{item.patientId}</b><small>{item.datasetName}</small></td><td><span className="mono">{item.runId}</span><small>{item.modelVersion}</small></td><td><span className="score-pill">{item.overallScore ?? "—"} / 5</span></td><td><StatusBadge>{item.locked ? "Locked" : item.status}</StatusBadge></td><td>{dateTime(item.updatedAt)}</td><td><button className="row-button" onClick={() => setSelected(item)}><Eye size={17} />Inspect</button></td></tr>)}</tbody></table>{!items.length && <EmptyState title="No evaluations yet" copy="Submitted doctor assessments will appear here." />}</section>
+  const visible = resource.value.items.filter((item) => `${item.reviewerName} ${item.reviewerEmail} ${item.patientId} ${item.datasetName}`.toLowerCase().includes(query.toLowerCase()));
+  const doctors = [...new Map(visible.map((item) => [item.reviewerId, { id: item.reviewerId, name: item.reviewerName, email: item.reviewerEmail, count: visible.filter((entry) => entry.reviewerId === item.reviewerId).length }])).values()];
+  const doctorItems = visible.filter((item) => item.reviewerId === doctorId);
+  const comparable = comparison ? resource.value.items.filter((item) => item.runId === comparison.runId && item.caseId === comparison.caseId && item.promptVersion === comparison.promptVersion && item.outputHash === comparison.outputHash) : [];
+  return <div className="content-page"><PageHeader eyebrow="GROUND TRUTH REGISTER" title="Clinician evaluations" copy="Start with a doctor, inspect the cases they scored, then compare only assessments of the exact same Official Run." />
+    <div className="toolbar surface"><label className="search-field"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => { setQuery(event.target.value); setDoctorId(""); }} placeholder="Search doctor, patient or dataset" /></label><span className="table-count">{doctors.length} doctors · {visible.length} records</span></div>
+    {!doctorId ? <section className="doctor-directory">{doctors.map((doctor) => <button className="surface doctor-directory-card" key={doctor.id} onClick={() => setDoctorId(doctor.id)}><span className="directory-avatar">{doctor.name.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><span><b>{doctor.name}</b><small>{doctor.email}</small></span><strong>{doctor.count}<small>assessments</small></strong><ArrowRight size={18} /></button>)}{!doctors.length && <EmptyState title="No evaluations yet" copy="Submitted doctor assessments will appear here." />}</section> : <><div className="register-breadcrumb"><button className="text-button" onClick={() => { setDoctorId(""); setSelected(null); }}>All doctors</button><ArrowRight size={14} /><b>{doctorItems[0]?.reviewerName}</b><span>{doctorItems.length} assessments</span></div><section className="surface table-surface"><table className="data-table"><thead><tr><th>Patient / dataset</th><th>Official run</th><th>Overall</th><th>Status</th><th>Updated</th><th /></tr></thead><tbody>{doctorItems.map((item) => { const peers = resource.value.items.filter((peer) => peer.runId === item.runId && peer.caseId === item.caseId && peer.promptVersion === item.promptVersion && peer.outputHash === item.outputHash); return <tr key={item.id}><td><b>{item.patientId}</b><small>{item.datasetName}</small></td><td><span className="mono">{item.runId}</span><small>{item.studyStatus} · {item.modelVersion}</small></td><td><span className="score-pill">{item.overallScore ?? "—"} / 5</span></td><td><StatusBadge>{item.locked ? "Locked" : item.status}</StatusBadge></td><td>{dateTime(item.updatedAt)}</td><td><div className="row-actions"><button className="row-button" onClick={() => setSelected(item)}><Eye size={17} />Inspect</button><button className="row-button" disabled={!item.outputHash || peers.length < 2} onClick={() => setComparison(item)}>Compare</button></div></td></tr>; })}</tbody></table></section></>}
     {selected && <AssessmentDetail assessment={selected} onClose={() => setSelected(null)} />}
+    {comparison && <ComparisonModal anchor={comparison} candidates={comparable} onClose={() => setComparison(null)} />}
   </div>;
+}
+
+function ComparisonModal({ anchor, candidates, onClose }) {
+  const [selectedIds, setSelectedIds] = useState(() => candidates.slice(0, 4).map((item) => item.id));
+  const selected = candidates.filter((item) => selectedIds.includes(item.id));
+  const toggle = (id) => setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  const detailed = selected.length <= 4;
+  return <Modal wide title={`Compare assessments · ${anchor.patientId}`} copy="Only the same case, Official Run, prompt version, and output hash can be compared. Peer doctors never see this view." onClose={onClose}><div className="comparison-picker">{candidates.map((item) => <label key={item.id}><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggle(item.id)} />{item.reviewerName}<small>{item.overallScore ?? "—"} / 5</small></label>)}</div>{selected.length < 2 ? <EmptyState title="Select at least two doctors" copy="Comparison requires independent assessments of the exact same official answer." /> : detailed ? <div className="comparison-detail">{selected.map((item) => <article key={item.id}><header><b>{item.reviewerName}</b><span className="score-pill">{item.overallScore} / 5</span></header>{item.criteria.map((criterion) => <section key={criterion.key}><b>{CRITERIA.find((entry) => entry.key === criterion.key)?.label}</b><strong>{criterion.score}/5</strong><p>{criterion.feedback || "No free-text feedback."}</p><div className="tag-row">{[...criterion.tags, ...criterion.customTags].map((tag) => <span key={tag}>{tag}</span>)}</div></section>)}<footer><b>Safety:</b> {item.safetyIssue}<br /><b>Case feedback:</b> {item.caseFeedback || "None"}</footer></article>)}</div> : <div className="comparison-matrix"><table><thead><tr><th>Rubric</th>{selected.map((item) => <th key={item.id}>{item.reviewerName}</th>)}</tr></thead><tbody>{CRITERIA.map((criterion) => { const values = selected.map((item) => item.criteria.find((entry) => entry.key === criterion.key)?.score || 0); const spread = Math.max(...values) - Math.min(...values); return <tr key={criterion.key} className={spread >= 2 ? "high-disagreement" : ""}><td>{criterion.label}{spread >= 2 && <small>High disagreement</small>}</td>{values.map((value, index) => <td key={`${criterion.key}-${index}`}>{value}/5</td>)}</tr>; })}</tbody></table><p>Five or more doctors are shown as a score matrix. Reduce selection to four or fewer to inspect tags and free-text feedback side-by-side.</p></div>}</Modal>;
 }
 
 function AssessmentDetail({ assessment, onClose }) {
@@ -122,41 +157,29 @@ function AssessmentDetail({ assessment, onClose }) {
   </div></Modal>;
 }
 
-function targetLabel(item, level) {
-  if (level === "run") return `${item.patientId} · ${item.runId}`;
-  if (level === "case") return `${item.patientId} · ${item.caseId}`;
-  if (level === "dataset") return item.datasetName;
-  return item.modelVersion;
-}
-
-function targetId(item, level) { return level === "run" ? item.runId : level === "case" ? item.caseId : level === "dataset" ? item.datasetId : item.modelVersion; }
-
 function AggregationStudio({ notify, navigate }) {
   const resource = useResource(api.assessments, []);
-  const [level, setLevel] = useState("run");
   const [selectedTarget, setSelectedTarget] = useState("");
   const [method, setMethod] = useState("mean");
-  const [doctorWeights, setDoctorWeights] = useState({});
-  const [dimensionWeights, setDimensionWeights] = useState(Object.fromEntries(CRITERIA.map((item) => [item.key, 1])));
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
-  const submitted = resource.value?.items?.filter((item) => item.status === "Submitted") || [];
-  const targets = useMemo(() => { const map = new Map(); submitted.forEach((item) => map.set(targetId(item, level), targetLabel(item, level))); return [...map].map(([id, label]) => ({ id, label })); }, [submitted, level]);
-  const included = submitted.filter((item) => targetId(item, level) === selectedTarget && !item.locked);
-  const reviewers = [...new Map(included.map((item) => [item.reviewerId, { id: item.reviewerId, name: item.reviewerName }])).values()];
-  useEffect(() => { setSelectedTarget(targets[0]?.id || ""); setPreview(null); }, [level, resource.loading]);
-  const payload = { level, targetId: selectedTarget, method, includedAssessmentIds: included.map((item) => item.id), doctorWeights, dimensionWeights };
+  const submitted = resource.value?.items?.filter((item) => item.status === "Submitted" && item.studyStatus === "Official") || [];
+  const targets = useMemo(() => { const map = new Map(); submitted.forEach((item) => map.set(item.runId, `${item.patientId} · Official Run ${item.runId.slice(-8)}`)); return [...map].map(([id, label]) => ({ id, label })); }, [submitted]);
+  const included = submitted.filter((item) => item.runId === selectedTarget && !item.locked);
+  const reviewerCount = new Set(included.map((item) => item.reviewerId)).size;
+  useEffect(() => { setSelectedTarget(targets[0]?.id || ""); setPreview(null); }, [resource.loading, targets.length]);
+  const payload = { level: "run", targetId: selectedTarget, method, includedAssessmentIds: included.map((item) => item.id) };
   const runPreview = async () => { setBusy(true); try { const value = await api.previewAggregation(payload); setPreview(value.result); } catch (error) { notify(error.message); } finally { setBusy(false); } };
   const finalize = async () => { if (!window.confirm("Finalize this result and lock all included assessments? This action cannot be edited in the current MVP.")) return; setBusy(true); try { const value = await api.finalizeAggregation(payload); notify(`Final result ${value.finalization.id} locked.`); navigate("results"); } catch (error) { notify(error.message); } finally { setBusy(false); } };
   if (resource.loading) return <LoadingState label="Preparing aggregation inputs…" />;
   if (resource.error) return <ErrorState message={resource.error} retry={resource.refresh} />;
-  return <div className="content-page"><PageHeader eyebrow="CONSENSUS ENGINE" title="Aggregation studio" copy="Choose the unit of analysis, statistical method and two independent weight layers before locking a result." />
-    <div className="aggregation-layout"><section className="surface aggregation-controls"><h2>1. Define the cohort</h2><div className="form-grid"><label>Aggregation level<select value={level} onChange={(event) => setLevel(event.target.value)}><option value="run">Model response run</option><option value="case">Patient case</option><option value="dataset">Dataset</option><option value="model">Model version</option></select></label><label>Target<select value={selectedTarget} onChange={(event) => { setSelectedTarget(event.target.value); setPreview(null); }}><option value="">Select a target</option>{targets.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label>Method<select value={method} onChange={(event) => { setMethod(event.target.value); setPreview(null); }}><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="weighted">Weighted mean</option></select></label></div>
-      <h2>2. Doctor weights</h2><p className="section-copy">Default is equal influence. A weight of zero explicitly excludes that doctor from the weighted calculation.</p><div className="weight-list">{reviewers.map((doctor) => <label key={doctor.id}><span>{doctor.name}<small>{doctor.id}</small></span><input min="0" step="0.1" type="number" value={doctorWeights[doctor.id] ?? 1} onChange={(event) => setDoctorWeights((current) => ({ ...current, [doctor.id]: Number(event.target.value) }))} /></label>)}{!reviewers.length && <p className="muted">No unlocked submitted assessments for this target.</p>}</div>
-      <h2>3. Dimension weights</h2><div className="weight-list dimension-weights">{CRITERIA.map((criterion) => <label key={criterion.key}><span>{criterion.label}</span><input min="0" step="0.1" type="number" value={dimensionWeights[criterion.key]} onChange={(event) => setDimensionWeights((current) => ({ ...current, [criterion.key]: Number(event.target.value) }))} /></label>)}</div>
+  return <div className="content-page"><PageHeader eyebrow="CONSENSUS ENGINE" title="Aggregation studio" copy="Preview and lock one Official Run at a time. The equal doctor and rubric-weight preset was recorded before clinicians scored." />
+    <div className="aggregation-layout"><section className="surface aggregation-controls"><h2>1. Select an Official Run</h2><div className="form-grid"><label>Target<select value={selectedTarget} onChange={(event) => { setSelectedTarget(event.target.value); setPreview(null); }}><option value="">Select a target</option>{targets.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label>Method<select value={method} onChange={(event) => { setMethod(event.target.value); setPreview(null); }}><option value="mean">Arithmetic mean</option><option value="median">Median</option><option value="weighted">Weighted mean</option></select></label></div>
+      <h2>2. Locked study preset</h2><div className="preset-card"><ShieldCheck size={20} /><div><b>Official preset v1</b><p>All Doctors = 1.0 · all six dimensions = 1.0. This preset is retained with the Official Run before scoring begins.</p></div></div>
+      <h2>3. Finalization eligibility</h2><div className={`eligibility-card${reviewerCount >= 3 ? " eligible" : ""}`}><b>{reviewerCount} / 3 distinct Doctors submitted</b><small>{reviewerCount >= 3 ? "Eligible to lock the final result." : "Preview is available now; final locking is blocked until three Doctors submit."}</small></div>
       <button className="primary-button wide" disabled={busy || !included.length} onClick={runPreview}>{busy ? "Calculating…" : "Preview governed result"}</button>
     </section>
-    <section className="surface aggregation-result"><h2>Result preview</h2>{!preview ? <EmptyState icon={ChartBar} title="No preview calculated" copy="Select a target and calculate the result. Nothing is locked at the preview stage." /> : <><div className="consensus-score"><span><strong>{preview.finalScore}</strong><small>/5</small></span><div><b>{titleCase(preview.method)} result</b><p>{preview.sampleSize} assessments · {preview.reviewerCount} doctors · {preview.responseRunCount} response runs</p></div></div><div className="result-bars">{Object.entries(preview.criteria).map(([key, item]) => <div key={key}><span>{item.label}<small>{item.minimum}–{item.maximum} observed</small></span><div><i style={{ width: `${item.score / 5 * 100}%` }} /><b>{item.score}</b></div></div>)}</div><div className="lock-warning"><LockKey size={20} /><p><b>Finalization is permanent in this MVP.</b> The {preview.sampleSize} included assessments become read-only and retain this method and both weight maps in the audit record.</p></div><button className="danger-button wide" disabled={busy} onClick={finalize}><LockKey size={17} />Finalize and lock result</button></>}</section></div>
+    <section className="surface aggregation-result"><h2>Result preview</h2>{!preview ? <EmptyState icon={ChartBar} title="No preview calculated" copy="Select a target and calculate the result. Nothing is locked at the preview stage." /> : <><div className="consensus-score"><span><strong>{preview.finalScore}</strong><small>/5</small></span><div><b>{titleCase(preview.method)} result</b><p>{preview.sampleSize} assessments · {preview.reviewerCount} doctors · one Official Run</p></div></div><div className="result-bars">{Object.entries(preview.criteria).map(([key, item]) => <div key={key}><span>{item.label}<small>{item.minimum}–{item.maximum} observed</small></span><div><i style={{ width: `${item.score / 5 * 100}%` }} /><b>{item.score}</b></div></div>)}</div><div className="lock-warning"><LockKey size={20} /><p><b>Finalization is permanent in this MVP.</b> The {preview.sampleSize} included assessments become read-only and retain the method plus Official Run preset in the audit record.</p></div><button className="danger-button wide" disabled={busy || preview.reviewerCount < 3} onClick={finalize}><LockKey size={17} />Finalize and lock result</button></>}</section></div>
   </div>;
 }
 

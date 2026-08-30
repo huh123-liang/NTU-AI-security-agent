@@ -53,7 +53,7 @@ export function App() {
     <Shell user={user} route={activeRoute} navigate={navigate} navItems={navItems} onLogout={logout} onFeedback={() => setFeedbackOpen(true)}>
       {user.role === "admin"
         ? <AdminPortal route={activeRoute} routeId={location.routeId} navigate={navigate} notify={notify} />
-        : <DoctorPortal route={activeRoute} routeId={location.routeId} navigate={navigate} notify={notify} />}
+        : <DoctorPortal route={activeRoute} routeId={location.routeId} navigate={navigate} notify={notify} user={user} />}
     </Shell>
     {feedbackOpen && <PlatformFeedbackModal page={activeRoute} onClose={() => setFeedbackOpen(false)} onSaved={() => { setFeedbackOpen(false); notify("Platform feedback saved to the Admin inbox."); }} />}
     <Toast message={toast} />

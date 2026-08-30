@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_salt TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('admin', 'doctor')),
   active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+  access_status TEXT NOT NULL DEFAULT 'active' CHECK (access_status IN ('active', 'scoring_suspended', 'deactivated')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -89,6 +90,9 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   stage_history_json TEXT NOT NULL DEFAULT '[]',
   evidence_links_json TEXT NOT NULL DEFAULT '[]',
   cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)),
+  study_status TEXT NOT NULL DEFAULT 'Sandbox',
+  output_hash TEXT,
+  aggregation_config_json TEXT NOT NULL DEFAULT '{}',
   output TEXT,
   response_id TEXT,
   usage_json TEXT NOT NULL DEFAULT '{}',

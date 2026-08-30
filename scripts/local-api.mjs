@@ -1,11 +1,16 @@
 import { readFileSync } from "node:fs";
-import { getDatabase, publicUser, hashPassword, verifyPassword, createSession, getAuthenticatedUser, removeSession, audit, id, now, withTransaction } from "./database.mjs";
+import { getDatabase, publicUser, hashPassword, verifyPassword, createSession, getAuthenticatedUser, removeSession, audit, id, now, sha256, withTransaction } from "./database.mjs";
 import { importDatasetBuffer, ensureBundledDataset } from "./dataset-importer.mjs";
 import { previewAggregation, finalizeAggregation } from "./aggregation.mjs";
 import { CRITERIA, safeJson, round } from "./domain.mjs";
 import { buildEvidenceCatalog, runMedicalModel, supportedProviders, PROMPT_VERSION, validateEvidenceCitations } from "../worker/model-adapter.js";
 
 const MAX_BODY_BYTES = 40 * 1024 * 1024;
+const DEFAULT_AGGREGATION_CONFIG = Object.freeze({
+  version: "official-preset-v1",
+  doctorWeights: {},
+  dimensionWeights: Object.fromEntries(CRITERIA.map((criterion) => [criterion.key, 1])),
+});
 
 const readBody = (req) => new Promise((resolve, reject) => {
   let body = "";
@@ -103,7 +108,10 @@ const runDto = (row) => {
   errorMessage: row.error_message,
   createdAt: row.created_at,
   completedAt: row.completed_at,
-  assessmentCount: Number(row.assessment_count || 0),
+   assessmentCount: Number(row.assessment_count || 0),
+   studyStatus: row.study_status || "Sandbox",
+   outputHash: row.output_hash || null,
+   aggregationConfig: safeJson(row.aggregation_config_json, {}),
   });
 };
 
@@ -121,6 +129,9 @@ function assessmentDto(db, row) {
     datasetId: row.dataset_id,
     datasetName: row.dataset_name,
     modelVersion: row.model_version,
+    promptVersion: row.prompt_version,
+    studyStatus: row.study_status || "Sandbox",
+    outputHash: row.output_hash || null,
     status: row.status,
     overallScore: row.overall_score === null ? null : round(row.overall_score),
     safetyIssue: row.safety_issue,
@@ -157,7 +168,7 @@ function requireAdmin(user, res) {
 
 function joinedAssessmentRows(db, where = "1 = 1", parameters = []) {
   const sql = `SELECT a.*, u.display_name AS reviewer_name, u.email AS reviewer_email, c.patient_id, c.dataset_id,
-    d.name AS dataset_name, r.model_version
+    d.name AS dataset_name, r.model_version, r.prompt_version, r.study_status, r.output_hash, r.aggregation_config_json
     FROM assessments a
     JOIN users u ON u.id = a.reviewer_id
     JOIN cases c ON c.id = a.case_id
@@ -223,11 +234,19 @@ export function localApiPlugin(root, modelConfig = {}) {
       const completedAt = now();
       const history = safeJson(db.prepare("SELECT stage_history_json FROM agent_runs WHERE id = ?").get(runId)?.stage_history_json, []);
       history.push({ stage: "completed", at: completedAt });
-      db.prepare(`UPDATE agent_runs SET provider = ?, model_version = ?, prompt_version = ?, status = 'Completed', lifecycle_status = 'Completed',
-        stage = 'completed', stage_history_json = ?, output = ?, response_id = ?, usage_json = ?, evidence_links_json = ?,
-        error_message = NULL, updated_at = ?, completed_at = ? WHERE id = ?`)
-        .run(model.provider, model.modelVersion, model.promptVersion, JSON.stringify(history), model.output, model.responseId,
-          JSON.stringify(model.usage || {}), JSON.stringify(validation), completedAt, completedAt, runId);
+      withTransaction(db, () => {
+        if (row.study_status === "Official pending") {
+          db.prepare("UPDATE agent_runs SET study_status = 'Archived', updated_at = ? WHERE case_id = ? AND study_status = 'Official'")
+            .run(completedAt, row.case_id);
+        }
+        db.prepare(`UPDATE agent_runs SET provider = ?, model_version = ?, prompt_version = ?, status = 'Completed', lifecycle_status = 'Completed',
+          stage = 'completed', stage_history_json = ?, output = ?, response_id = ?, usage_json = ?, evidence_links_json = ?, output_hash = ?,
+          study_status = CASE WHEN study_status = 'Official pending' THEN 'Official' ELSE study_status END,
+          aggregation_config_json = CASE WHEN study_status = 'Official pending' THEN ? ELSE aggregation_config_json END,
+          error_message = NULL, updated_at = ?, completed_at = ? WHERE id = ?`)
+          .run(model.provider, model.modelVersion, model.promptVersion, JSON.stringify(history), model.output, model.responseId,
+            JSON.stringify(model.usage || {}), JSON.stringify(validation), sha256(model.output), JSON.stringify(DEFAULT_AGGREGATION_CONFIG), completedAt, completedAt, runId);
+      });
       audit(db, row.created_by, "agent_run.completed", "agent_run", runId, {
         caseId: row.case_id, provider: model.provider, modelVersion: model.modelVersion,
         verifiedEvidenceCount: validation.evidenceLinks.length, invalidEvidenceCitations: validation.invalidCitations,
@@ -254,7 +273,7 @@ export function localApiPlugin(root, modelConfig = {}) {
     }
   };
 
-  const createRun = (selectedCase, userId) => {
+  const createRun = (selectedCase, userId, { official = false } = {}) => {
     const fullClinical = safeJson(selectedCase.clinical_json, {});
     const visits = Array.isArray(fullClinical.visits) ? fullClinical.visits : [];
     if (visits.length < 2) throw new Error("At least two visits are required to withhold a reference visit.");
@@ -265,11 +284,11 @@ export function localApiPlugin(root, modelConfig = {}) {
     const startedAt = now();
     const history = [{ stage: "preparing_data", at: startedAt }];
     db.prepare(`INSERT INTO agent_runs (id, case_id, created_by, provider, model_version, prompt_version, status, lifecycle_status,
-      stage, stage_history_json, evidence_links_json, cancel_requested, input_snapshot_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'Running', 'Running', 'preparing_data', ?, '{}', 0, ?, ?, ?)`)
+      stage, stage_history_json, evidence_links_json, cancel_requested, study_status, aggregation_config_json, input_snapshot_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'Running', 'Running', 'preparing_data', ?, '{}', 0, ?, ?, ?, ?, ?)`)
       .run(runId, selectedCase.id, userId, modelConfig.provider || "deepseek", modelConfig.model || "pending", PROMPT_VERSION,
-        JSON.stringify(history), JSON.stringify(inputSnapshot), startedAt, startedAt);
-    audit(db, userId, "agent_run.started", "agent_run", runId, { caseId: selectedCase.id });
+        JSON.stringify(history), official ? "Official pending" : "Sandbox", JSON.stringify(DEFAULT_AGGREGATION_CONFIG), JSON.stringify(inputSnapshot), startedAt, startedAt);
+    audit(db, userId, official ? "official_run.started" : "agent_run.started", "agent_run", runId, { caseId: selectedCase.id });
     setImmediate(() => executeRun(runId));
     return db.prepare(`SELECT r.*, u.display_name AS creator_name, 0 AS assessment_count
       FROM agent_runs r JOIN users u ON u.id = r.created_by WHERE r.id = ?`).get(runId);
@@ -307,8 +326,8 @@ export function localApiPlugin(root, modelConfig = {}) {
             const credentials = hashPassword(password);
             const userId = id("USR");
             const timestamp = now();
-            db.prepare(`INSERT INTO users (id, display_name, email, password_hash, password_salt, role, active, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, 'doctor', 1, ?, ?)`)
+            db.prepare(`INSERT INTO users (id, display_name, email, password_hash, password_salt, role, active, access_status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, 'doctor', 1, 'active', ?, ?)`)
               .run(userId, displayName, email, credentials.hash, credentials.salt, timestamp, timestamp);
             const session = createSession(db, userId);
             const user = publicUser(db.prepare("SELECT * FROM users WHERE id = ?").get(userId));
@@ -320,7 +339,7 @@ export function localApiPlugin(root, modelConfig = {}) {
             const body = await readBody(req);
             const email = String(body.email || "").trim().toLowerCase();
             const row = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
-            if (!row || !row.active || !verifyPassword(String(body.password || ""), row.password_salt, row.password_hash)) return send(res, 401, { error: "Email or password is incorrect." });
+            if (!row || !row.active || row.access_status === "deactivated" || !verifyPassword(String(body.password || ""), row.password_salt, row.password_hash)) return send(res, 401, { error: "Email or password is incorrect." });
             if (body.portalRole && body.portalRole !== row.role) return send(res, 403, { error: `This account belongs to the ${row.role} portal.` });
             const session = createSession(db, row.id);
             audit(db, row.id, "session.login", "user", row.id, { role: row.role });
@@ -339,7 +358,7 @@ export function localApiPlugin(root, modelConfig = {}) {
               const metric = (sql) => Number(db.prepare(sql).get().count);
               return send(res, 200, { metrics: {
                 doctors: metric("SELECT COUNT(*) AS count FROM users WHERE role = 'doctor'"),
-                activeDoctors: metric("SELECT COUNT(*) AS count FROM users WHERE role = 'doctor' AND active = 1"),
+                activeDoctors: metric("SELECT COUNT(*) AS count FROM users WHERE role = 'doctor' AND active = 1 AND access_status = 'active'"),
                 datasets: metric("SELECT COUNT(*) AS count FROM datasets"),
                 validCases: metric("SELECT COUNT(*) AS count FROM cases"),
                 responseRuns: metric("SELECT COUNT(*) AS count FROM agent_runs WHERE status = 'Completed'"),
@@ -351,7 +370,7 @@ export function localApiPlugin(root, modelConfig = {}) {
             const row = db.prepare(`SELECT
               (SELECT COUNT(*) FROM datasets d WHERE d.owner_id = ? OR (d.visibility = 'shared' AND d.status = 'Approved')) AS datasets,
               (SELECT COUNT(*) FROM cases c JOIN datasets d ON d.id = c.dataset_id WHERE d.owner_id = ? OR (d.visibility = 'shared' AND d.status = 'Approved')) AS cases,
-              (SELECT COUNT(*) FROM agent_runs WHERE created_by = ?) AS runs,
+              (SELECT COUNT(*) FROM agent_runs WHERE case_id IN (SELECT c.id FROM cases c JOIN datasets d ON d.id = c.dataset_id WHERE d.owner_id = ? OR (d.visibility = 'shared' AND d.status = 'Approved')) AND study_status = 'Official') AS runs,
               (SELECT COUNT(*) FROM assessments WHERE reviewer_id = ? AND status = 'Submitted') AS submitted`).get(user.id, user.id, user.id, user.id);
             return send(res, 200, { metrics: Object.fromEntries(Object.entries(row).map(([key, value]) => [key, Number(value)])) });
           }
@@ -418,10 +437,40 @@ export function localApiPlugin(root, modelConfig = {}) {
           }
 
           const caseMatch = pathname.match(/^\/cases\/([^/]+)$/);
+          if (pathname === "/admin/official-runs" && method === "GET") {
+            if (!requireAdmin(user, res)) return;
+            const datasetId = String(url.searchParams.get("datasetId") || "");
+            const search = `%${String(url.searchParams.get("search") || "").trim()}%`;
+            const rows = db.prepare(`SELECT c.*, d.name AS dataset_name, r.id AS run_id, r.status AS run_status, r.lifecycle_status,
+              r.study_status, r.model_version, r.prompt_version, r.output_hash, r.created_at AS run_created_at,
+              (SELECT COUNT(DISTINCT a.reviewer_id) FROM assessments a WHERE a.run_id = r.id AND a.status = 'Submitted') AS submitted_doctors
+              FROM cases c JOIN datasets d ON d.id = c.dataset_id
+              LEFT JOIN agent_runs r ON r.id = (SELECT r2.id FROM agent_runs r2 WHERE r2.case_id = c.id
+                AND r2.study_status IN ('Official', 'Official pending') ORDER BY CASE r2.study_status WHEN 'Official' THEN 0 ELSE 1 END, r2.created_at DESC LIMIT 1)
+              WHERE (? = '' OR c.dataset_id = ?) AND (c.patient_id LIKE ? OR c.condition_summary LIKE ?)
+              ORDER BY c.patient_id LIMIT 100`).all(datasetId, datasetId, search, search);
+            return send(res, 200, { items: rows.map((row) => ({
+              ...caseDto(row), officialRun: row.run_id ? {
+                id: row.run_id, status: row.lifecycle_status || row.run_status, studyStatus: row.study_status,
+                modelVersion: row.model_version, promptVersion: row.prompt_version, outputHash: row.output_hash,
+                createdAt: row.run_created_at, submittedDoctors: Number(row.submitted_doctors || 0),
+              } : null,
+            })) });
+          }
           if (caseMatch && method === "GET") {
             const row = caseAccessRow(db, user, decodeURIComponent(caseMatch[1]));
             if (!row) return send(res, 404, { error: "Case not found or not available to this account." });
             return send(res, 200, { case: caseDto(row, true) });
+          }
+
+          const officialRunMatch = pathname.match(/^\/admin\/cases\/([^/]+)\/official-run$/);
+          if (officialRunMatch && method === "POST") {
+            if (!requireAdmin(user, res)) return;
+            const caseId = decodeURIComponent(officialRunMatch[1]);
+            const selectedCase = caseAccessRow(db, user, caseId);
+            if (!selectedCase) return send(res, 404, { error: "Case not found." });
+            try { return send(res, 202, { run: runDto(createRun(selectedCase, user.id, { official: true })) }); }
+            catch (error) { return send(res, 422, { error: error.message }); }
           }
 
           const caseRunsMatch = pathname.match(/^\/cases\/([^/]+)\/runs$/);
@@ -430,16 +479,17 @@ export function localApiPlugin(root, modelConfig = {}) {
             if (!caseAccessRow(db, user, caseId)) return send(res, 404, { error: "Case not found or not available to this account." });
             const rows = db.prepare(`SELECT r.*, u.display_name AS creator_name,
               (SELECT COUNT(*) FROM assessments a WHERE a.run_id = r.id AND a.status = 'Submitted') AS assessment_count
-              FROM agent_runs r JOIN users u ON u.id = r.created_by WHERE r.case_id = ? ORDER BY r.created_at DESC`).all(caseId);
+              FROM agent_runs r JOIN users u ON u.id = r.created_by WHERE r.case_id = ? ${user.role === "admin" ? "" : "AND r.study_status = 'Official'"} ORDER BY r.created_at DESC`).all(caseId);
             return send(res, 200, { items: rows.map(runDto) });
           }
 
           if (caseRunsMatch && method === "POST") {
             const caseId = decodeURIComponent(caseRunsMatch[1]);
+            if (!requireAdmin(user, res)) return;
             const selectedCase = caseAccessRow(db, user, caseId);
             if (!selectedCase) return send(res, 404, { error: "Case not found or not available to this account." });
             try {
-              return send(res, 202, runDto(createRun(selectedCase, user.id)));
+              return send(res, 202, runDto(createRun(selectedCase, user.id, { official: true })));
             } catch (error) {
               return send(res, 422, { error: error.message });
             }
@@ -450,7 +500,7 @@ export function localApiPlugin(root, modelConfig = {}) {
             const runId = decodeURIComponent(runCancelMatch[1]);
             const row = db.prepare("SELECT * FROM agent_runs WHERE id = ?").get(runId);
             if (!row || !caseAccessRow(db, user, row.case_id)) return send(res, 404, { error: "Response run not found." });
-            if (user.role !== "admin" && row.created_by !== user.id) return send(res, 403, { error: "Only the run creator can cancel this generation." });
+            if (!requireAdmin(user, res)) return;
             if ((row.lifecycle_status || row.status) !== "Running") return send(res, 409, { error: "Only a running generation can be cancelled." });
             const cancelledAt = now();
             const history = safeJson(row.stage_history_json, []);
@@ -467,11 +517,12 @@ export function localApiPlugin(root, modelConfig = {}) {
 
           const runRetryMatch = pathname.match(/^\/runs\/([^/]+)\/retry$/);
           if (runRetryMatch && method === "POST") {
+            if (!requireAdmin(user, res)) return;
             const original = db.prepare("SELECT * FROM agent_runs WHERE id = ?").get(decodeURIComponent(runRetryMatch[1]));
             if (!original) return send(res, 404, { error: "Response run not found." });
             const selectedCase = caseAccessRow(db, user, original.case_id);
             if (!selectedCase) return send(res, 404, { error: "Response run not found." });
-            try { return send(res, 202, runDto(createRun(selectedCase, user.id))); }
+            try { return send(res, 202, runDto(createRun(selectedCase, user.id, { official: true }))); }
             catch (error) { return send(res, 422, { error: error.message }); }
           }
 
@@ -480,7 +531,7 @@ export function localApiPlugin(root, modelConfig = {}) {
             const row = db.prepare(`SELECT r.*, u.display_name AS creator_name,
               (SELECT COUNT(*) FROM assessments a WHERE a.run_id = r.id AND a.status = 'Submitted') AS assessment_count
               FROM agent_runs r JOIN users u ON u.id = r.created_by WHERE r.id = ?`).get(decodeURIComponent(runMatch[1]));
-            if (!row || !caseAccessRow(db, user, row.case_id)) return send(res, 404, { error: "Response run not found." });
+            if (!row || !caseAccessRow(db, user, row.case_id) || (user.role === "doctor" && row.study_status !== "Official")) return send(res, 404, { error: "Official response run not found." });
             return send(res, 200, { run: runDto(row) });
           }
 
@@ -488,7 +539,7 @@ export function localApiPlugin(root, modelConfig = {}) {
           if (runAssessmentMatch && method === "GET") {
             const runId = decodeURIComponent(runAssessmentMatch[1]);
             const run = db.prepare("SELECT * FROM agent_runs WHERE id = ?").get(runId);
-            if (!run || !caseAccessRow(db, user, run.case_id)) return send(res, 404, { error: "Response run not found." });
+            if (!run || !caseAccessRow(db, user, run.case_id) || (user.role === "doctor" && run.study_status !== "Official")) return send(res, 404, { error: "Official response run not found." });
             if (user.role === "admin") {
               const rows = joinedAssessmentRows(db, "a.run_id = ?", [runId]);
               return send(res, 200, { items: rows.map((row) => assessmentDto(db, row)) });
@@ -499,9 +550,10 @@ export function localApiPlugin(root, modelConfig = {}) {
 
           if (runAssessmentMatch && method === "PUT") {
             if (user.role !== "doctor") return send(res, 403, { error: "Only Doctor accounts can create assessments." });
+            if (user.accessStatus === "scoring_suspended") return send(res, 403, { error: "This account is scoring suspended. Your assessment history remains readable." });
             const runId = decodeURIComponent(runAssessmentMatch[1]);
-            const run = db.prepare("SELECT * FROM agent_runs WHERE id = ? AND status = 'Completed'").get(runId);
-            if (!run || !caseAccessRow(db, user, run.case_id)) return send(res, 404, { error: "Completed response run not found." });
+            const run = db.prepare("SELECT * FROM agent_runs WHERE id = ? AND status = 'Completed' AND study_status = 'Official'").get(runId);
+            if (!run || !caseAccessRow(db, user, run.case_id)) return send(res, 404, { error: "The current Official Run was not found." });
             const body = await readBody(req);
             const criteria = Array.isArray(body.criteria) ? body.criteria : [];
             if (criteria.length !== CRITERIA.length || criteria.some((item) => !CRITERIA.some((criterion) => criterion.key === item.key) || Number(item.score) < 1 || Number(item.score) > 5)) {
@@ -537,7 +589,7 @@ export function localApiPlugin(root, modelConfig = {}) {
           }
 
           if (pathname === "/assessments" && method === "GET") {
-            const rows = user.role === "admin" ? joinedAssessmentRows(db) : joinedAssessmentRows(db, "a.reviewer_id = ?", [user.id]);
+            const rows = user.role === "admin" ? joinedAssessmentRows(db) : joinedAssessmentRows(db, "a.reviewer_id = ? AND r.study_status = 'Official'", [user.id]);
             return send(res, 200, { items: rows.map((row) => assessmentDto(db, row)) });
           }
 
@@ -566,11 +618,14 @@ export function localApiPlugin(root, modelConfig = {}) {
             if (!requireAdmin(user, res)) return;
             const targetId = decodeURIComponent(adminUserMatch[1]);
             const target = db.prepare("SELECT * FROM users WHERE id = ?").get(targetId);
-            if (!target || target.role === "admin") return send(res, 422, { error: "Only Doctor accounts can be activated or deactivated." });
+            if (!target || target.role === "admin") return send(res, 422, { error: "Only Doctor accounts can be updated." });
             const body = await readBody(req);
-            db.prepare("UPDATE users SET active = ?, updated_at = ? WHERE id = ?").run(body.active ? 1 : 0, now(), targetId);
-            audit(db, user.id, body.active ? "doctor.activated" : "doctor.deactivated", "user", targetId);
-            return send(res, 200, { ok: true, active: Boolean(body.active) });
+            const accessStatus = ["active", "scoring_suspended", "deactivated"].includes(body.accessStatus)
+              ? body.accessStatus : (body.active ? "active" : "deactivated");
+            const active = accessStatus === "deactivated" ? 0 : 1;
+            db.prepare("UPDATE users SET active = ?, access_status = ?, updated_at = ? WHERE id = ?").run(active, accessStatus, now(), targetId);
+            audit(db, user.id, `doctor.${accessStatus}`, "user", targetId);
+            return send(res, 200, { ok: true, active: Boolean(active), accessStatus });
           }
 
           if (pathname === "/admin/feedback" && method === "GET") {
