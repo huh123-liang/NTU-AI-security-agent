@@ -50,8 +50,8 @@ export function MetricCard({ icon: Icon = Database, label, value, note, tone = "
   return <article className="metric-card"><span className={`metric-icon ${tone}`}><Icon size={21} /></span><div><small>{label}</small><strong>{value}</strong><p>{note}</p></div></article>;
 }
 
-export function Modal({ title, copy, children, onClose, wide = false }) {
-  return <div className="modal-backdrop" role="presentation"><section className={`modal ${wide ? "wide" : ""}`} role="dialog" aria-modal="true" aria-label={title}><button className="modal-close" onClick={onClose} aria-label="Close"><X size={18} /></button><div className="modal-heading"><span><FirstAidKit size={22} /></span><div><h2>{title}</h2>{copy && <p>{copy}</p>}</div></div>{children}</section></div>;
+export function Modal({ title, copy, children, onClose, wide = false, className = "" }) {
+  return <div className="modal-backdrop" role="presentation"><section className={`modal ${wide ? "wide" : ""} ${className}`.trim()} role="dialog" aria-modal="true" aria-label={title}><button className="modal-close" onClick={onClose} aria-label="Close"><X size={18} /></button><div className="modal-heading"><span><FirstAidKit size={22} /></span><div><h2>{title}</h2>{copy && <p>{copy}</p>}</div></div>{children}</section></div>;
 }
 
 export function Toast({ message }) {

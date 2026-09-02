@@ -202,7 +202,7 @@ Live local database snapshot on 24 August 2026:
 - [ ] Add blinded train/validation/test splitting and leakage prevention for the future evaluator.
 - [ ] Complete browser E2E tests for registration, model generation, three-Doctor scoring, Admin aggregation and locking.
 - [ ] Conduct formal clinician usability testing and record required workflow changes.
-- [x] Improve Admin information architecture with Doctor → case/run navigation and exact-run comparison views.
+- [x] Improve Admin information architecture with Doctor → case/run navigation and exact-run comparison views. The detailed comparison now supports 2–4 equal-width clinician cards, row-aligned rubric/support data, sticky clinician headers, collapsible long feedback, and automatic highlighting when a dimension score spread is at least 2 points.
 
 ### P1 — Required for a shared research pilot
 

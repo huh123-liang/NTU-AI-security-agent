@@ -1,61 +1,49 @@
-# MVP2 Design QA
+# MVP2 Design QA — Clinician Comparison Board
 
-- Source visual truth: `design-references/selected-safety-review-cockpit.png`
-- Source pixel dimensions: 1440 × 1024
-- Intended implementation viewport: 1440 × 1024 CSS pixels at deviceScaleFactor 1
-- Intended state: Doctor Portal, completed DeepSeek run selected, six-dimension Safety Review Cockpit visible
-- Current implementation URL: `http://127.0.0.1:4181/`
-- Browser-rendered implementation screenshot: unavailable
+- Reference: `C:\Users\Lenovo\AppData\Local\Temp\codex-clipboard-808f9f82-9786-4a5f-bdce-473770407954.png`
+- Verified implementation: `http://127.0.0.1:4190/#/evaluations`
+- Verification date: 2 September 2026
+- Verified case: `SG-SYN-000002`
+- Verified reviewers: `123`, `213`, and `321`
 
-## Full-view comparison evidence
+## Reference versus implementation
 
-The source visual was available and inspected. The current MVP2 implementation was built successfully, but the Codex in-app browser could not initialize because its `browser-service.mjs` dependency was rejected by the environment's trusted-code-path check. Therefore no current browser-rendered screenshot could be produced through the mandated browser surface.
+The reference modal used one narrow vertical column. Only the first clinician and part of the second clinician were visible, so scores and feedback could not be compared at the same eye position.
 
-The older files `design-qa-final.png`, `design-qa-focus-evaluation.png`, and `design-qa-comparison-final.png` belong to the earlier P0 implementation and are not valid evidence for MVP2.
+The implemented modal expands to 94% of the viewport and presents the selected clinicians in equal-width columns. Each rubric and support field is rendered as a shared horizontal row, so the same dimension remains aligned across every clinician. The established NTU navy/crimson visual language, existing typography, cards, icon library, and data labels were preserved.
 
-## Focused comparison evidence
+## Browser QA evidence
 
-Unavailable for the same browser-connection reason. Code-level review confirms the intended three-column proportions, deep-navy sidebar, top workflow stepper, longitudinal timeline, model response panel, per-dimension 1–5 controls and feedback controls, but code inspection is not accepted as visual QA evidence.
+The following states were exercised in the running local product through the Codex in-app browser:
 
-## Findings
+1. Three-clinician detailed comparison: all three clinician headers, overall scores, six rubric dimensions, safety-critical results, missing/clarification items, and case feedback were visible in parallel.
+2. Sticky headers: clinician identity and overall score remained visible while the comparison body was vertically scrolled.
+3. Long feedback: expanding clinician `123` case feedback increased the whole shared row while keeping the other two clinician cells aligned; collapsing restored the compact state.
+4. Two-clinician comparison: deselecting clinician `321` produced two centered equal-width cards; reselecting restored the three-column board.
+5. Disagreement visibility: rubric rows with a score spread of 2 points were highlighted, with Highest and Lowest labels shown beside the relevant scores.
+6. Browser console: no warnings or errors were present after the comparison interactions.
 
-- [P0] Browser-rendered evidence is missing.
-  - Location: complete MVP2 Doctor and Admin portals.
-  - Evidence: the production build and HTTP API run, but no current screenshot can be captured through the in-app browser.
-  - Impact: typography, spacing, overflow, focus states and visual fidelity cannot be formally certified.
-  - Fix: obtain permission to use local Playwright for capture, or repair the Browser plugin trusted-path configuration; then test login, Doctor workspace, Admin aggregation, modals, console errors and the 1440 × 1024 layout.
+## Responsive and edge-state review
 
-## Required fidelity surfaces
+- Two selected clinicians: centered board with two equal columns.
+- Three selected clinicians: full-width three-column board.
+- Four selected clinicians: four equal columns with a minimum board width of 1280 pixels.
+- Narrow viewport: the comparison body keeps its columns and becomes horizontally scrollable instead of stacking the cards.
+- Five or more candidates: the existing compact matrix remains available instead of forcing an unreadable detailed-card layout.
+- Long tags and comments use wrapping; identity fields use ellipsis where a single-line header is required.
 
-- Fonts and typography: implemented with local Inter 400/500/600/700, but browser rendering remains unverified.
-- Spacing and layout rhythm: CSS matches the reference's fixed sidebar and dense three-column cockpit, but browser rendering remains unverified.
-- Colors and visual tokens: NTU-inspired navy/crimson and clinical semantic states are implemented without gradients; browser contrast remains unverified.
-- Image quality and assets: the application relies on Phosphor UI icons and Recharts; no decorative raster placeholder is used. The official NTU logo is not bundled because an authorized asset was not provided.
-- Copy and content: all product UI is English and labels data as synthetic/research-only; copy is implemented but browser wrapping remains unverified.
+## Severity findings
 
-## Primary interactions verified outside the browser
+- P0: none.
+- P1: none.
+- P2: none in the tested three-clinician and two-clinician flows.
+- Coverage note: the live seed case contained three comparable assessments, so the four-clinician layout was verified through implementation rules and production build rather than a four-record browser state.
 
-- Admin and Doctor authentication via REST.
-- Doctor registration.
-- Dataset visibility and 369 valid case retrieval.
-- Real DeepSeek run generation from visits 1–9.
-- Three independent Doctor submissions.
-- Admin weighted preview/finalization.
-- Doctor peer privacy and HTTP 423 lock enforcement.
-- Windows launcher start/health/stop.
-- Production build and 7 automated tests.
+## Functional verification
 
-## Comparison history
+- `npm.cmd run build`: passed.
+- `npm.cmd test`: 12 passed, 0 failed.
+- Production page: loaded from the local port 4190 service.
+- Comparison selection, scroll, expand/collapse, and disagreement states: passed.
 
-- MVP2 pass 1: blocked before visual comparison by the Browser plugin trusted-path error. No P0/P1/P2 visual fix loop could begin.
-
-## Implementation checklist
-
-1. Capture the unified login at 1440 × 1024.
-2. Sign in as Doctor and capture the completed-run workspace.
-3. Verify all navigation, score, feedback, raw-evidence and save controls.
-4. Sign in as Admin and capture Overview, Evaluation Detail and Aggregation Studio.
-5. Check console errors and overflow.
-6. Compare source and implementation in one combined image; fix P0/P1/P2 findings and repeat.
-
-final result: blocked
+final result: passed
