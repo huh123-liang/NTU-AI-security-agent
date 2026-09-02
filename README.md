@@ -15,6 +15,22 @@ An English-language, local research platform for independent clinician evaluatio
 7. The Admin inspects all submissions and applies mean, median or weighted mean with doctor-level and rubric-level weights.
 8. Finalization records the method and weights, then locks every included assessment.
 
+## First-time setup (recommended)
+
+After cloning or downloading the repository on a new Windows computer, double-click `First-Time-Setup.cmd` or `首次安装向导.cmd`.
+
+The bilingual wizard:
+
+1. checks that Node.js 20 or later and npm are available;
+2. installs the project dependencies when they are missing;
+3. securely asks for the user's own DeepSeek API key and stores it only in the Git-ignored `.env.local` file;
+4. builds the production interface and runs the automated test suite;
+5. records a non-sensitive local setup status and starts the verified local service.
+
+The API-key input is hidden. It is never printed, logged, committed, or sent anywhere except to the configured model provider when the user requests model generation. A user may skip the key and explore the interface, but model generation will remain unavailable.
+
+`Start-Platform.cmd` and `一键启动-AI医疗评估平台.cmd` automatically redirect to the setup wizard when dependencies or `.env.local` are missing. After the first successful setup, use either launcher normally.
+
 ## One-click Windows launch
 
 Double-click `Start-Platform.cmd` or the Chinese launcher `一键启动-AI医疗评估平台.cmd`. The launcher reuses a service only when its instance ID, PID, project path and port all match. Stale records and unrelated services are never reused; if 4190 is occupied, a new verified instance automatically uses 4191–4199. It rebuilds only when source files changed, starts the local SQLite/API server in the background, checks DeepSeek HTTPS reachability, and opens the verified port. The same provider-connectivity result is exposed by `/api/v1/health`. Diagnostic logs and the runtime identity are stored under `.runtime/`.

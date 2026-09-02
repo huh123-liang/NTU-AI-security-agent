@@ -24,6 +24,7 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 - The Doctor-facing evidence view is human-readable clinical-record format. Raw JSON is retained for Admin/development audit only.
 - Admin evaluation review is doctor-first: Doctor → assessed case/official run → optional 2–4 detailed or 5+ matrix comparison of assessments for that exact Official Run. The clinician chatbot is deferred.
 - The detailed Admin comparison uses 2–4 equal-width clinician cards in one horizontal board. Rubric, safety, clarification and case-feedback rows remain strictly aligned; clinician headers stay visible while scrolling; long feedback is collapsed on demand; score spreads of two or more are highlighted. Narrow viewports scroll horizontally instead of stacking cards.
+- New Windows clones should be initialized through `First-Time-Setup.cmd` or `首次安装向导.cmd`. The wizard may write only Git-ignored local configuration/status files; it must never print, log, commit, or transmit an API key outside a requested model call.
 - Doctor accounts use Active, Scoring suspended, and Deactivated states. Never delete a user or assessment; preserve audit history.
 
 When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.6.0 - First-time setup wizard
+
+- Added bilingual `First-Time-Setup.cmd` and `首次安装向导.cmd` entry points.
+- Added Node.js/npm checks, automatic dependency installation, hidden local DeepSeek-key configuration, production build, automated tests and setup-status reporting.
+- Updated normal launchers to open the setup wizard automatically when dependencies or `.env.local` are missing.
+- Documented the complete new-computer setup flow in both README and the Chinese engineering guide.
+
 ## Unreleased — 2026-08-19
 
 - Added cryptographic runtime instance IDs and server-owned PID/port/project identity records.
