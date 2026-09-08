@@ -44,6 +44,18 @@ test("evidence catalog accepts only source measurements from visits 1-9", () => 
   assert.deepEqual(validation.invalidCitations, ["V10-HBA1C"]);
 });
 
+test("evidence catalog excludes values marked as imputed or unobserved", () => {
+  const catalog = buildEvidenceCatalog({ visits: [{
+    visit_number: 1,
+    date: "2026-01-01",
+    clinic_measurements: {
+      systolic_bp: { value: 138, unit: "mmHg", observed: true },
+      bmi: { value: 25.4, unit: "kg/m²", imputed: true, observed: false },
+    },
+  }] });
+  assert.deepEqual(catalog.map((item) => item.id), ["V1-SYSTOLIC-BP"]);
+});
+
 test("run DTO evidence decoding preserves canonical and legacy evidence links", () => {
   const link = { id: "V9-SYSTOLIC-BP", visitNumber: 9 };
   assert.deepEqual(

@@ -58,6 +58,98 @@ CREATE TABLE IF NOT EXISTS dataset_issues (
   FOREIGN KEY (dataset_id) REFERENCES datasets(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS ingestion_jobs (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  source_filename TEXT NOT NULL,
+  source_path TEXT NOT NULL,
+  source_size INTEGER NOT NULL DEFAULT 0,
+  received_bytes INTEGER NOT NULL DEFAULT 0,
+  source_sha256 TEXT,
+  status TEXT NOT NULL DEFAULT 'Uploading',
+  stage TEXT NOT NULL DEFAULT 'uploading',
+  progress INTEGER NOT NULL DEFAULT 0,
+  discovery_json TEXT NOT NULL DEFAULT '{}',
+  mapping_json TEXT NOT NULL DEFAULT '{}',
+  rules_json TEXT NOT NULL DEFAULT '{}',
+  quality_json TEXT NOT NULL DEFAULT '{}',
+  processed_path TEXT,
+  dataset_id TEXT,
+  version_id TEXT,
+  error_message TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  FOREIGN KEY (owner_id) REFERENCES users(id),
+  FOREIGN KEY (dataset_id) REFERENCES datasets(id)
+);
+
+CREATE TABLE IF NOT EXISTS dataset_versions (
+  id TEXT PRIMARY KEY,
+  dataset_id TEXT NOT NULL,
+  ingestion_job_id TEXT,
+  version_number INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Pending Review',
+  source_sha256 TEXT NOT NULL,
+  mapping_json TEXT NOT NULL DEFAULT '{}',
+  rules_json TEXT NOT NULL DEFAULT '{}',
+  quality_json TEXT NOT NULL DEFAULT '{}',
+  processed_path TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  approved_by TEXT,
+  created_at TEXT NOT NULL,
+  approved_at TEXT,
+  UNIQUE (dataset_id, version_number),
+  UNIQUE (ingestion_job_id),
+  FOREIGN KEY (dataset_id) REFERENCES datasets(id) ON DELETE CASCADE,
+  FOREIGN KEY (ingestion_job_id) REFERENCES ingestion_jobs(id),
+  FOREIGN KEY (created_by) REFERENCES users(id),
+  FOREIGN KEY (approved_by) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS mapping_profiles (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  structure_fingerprint TEXT NOT NULL,
+  mapping_json TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (structure_fingerprint),
+  FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS ingestion_events (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  status TEXT NOT NULL,
+  message TEXT NOT NULL,
+  details_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (job_id) REFERENCES ingestion_jobs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS record_lineage (
+  id TEXT PRIMARY KEY,
+  dataset_version_id TEXT NOT NULL,
+  case_id TEXT,
+  patient_id TEXT,
+  canonical_path TEXT NOT NULL,
+  source_file TEXT NOT NULL,
+  source_row INTEGER,
+  source_column TEXT,
+  original_json TEXT NOT NULL DEFAULT '{}',
+  transformed_json TEXT NOT NULL DEFAULT '{}',
+  rule_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (dataset_version_id) REFERENCES dataset_versions(id) ON DELETE CASCADE,
+  FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS cases (
   id TEXT PRIMARY KEY,
   dataset_id TEXT NOT NULL,
@@ -181,6 +273,11 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_datasets_owner ON datasets(owner_id);
+CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_owner ON ingestion_jobs(owner_id);
+CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status ON ingestion_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_dataset_versions_dataset ON dataset_versions(dataset_id);
+CREATE INDEX IF NOT EXISTS idx_ingestion_events_job ON ingestion_events(job_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_lineage_version_patient ON record_lineage(dataset_version_id, patient_id);
 CREATE INDEX IF NOT EXISTS idx_cases_dataset ON cases(dataset_id);
 CREATE INDEX IF NOT EXISTS idx_runs_case ON agent_runs(case_id);
 CREATE INDEX IF NOT EXISTS idx_assessments_run ON assessments(run_id);

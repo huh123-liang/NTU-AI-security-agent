@@ -8,9 +8,12 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 
 - The current visual source of truth is `design-references/selected-evidence-lens-v1.png`; the earlier Safety Review Cockpit remains the structural baseline.
 - Preserve the three-column clinical workspace and full-height deep navy navigation, while adding the selected Evidence Lens interaction, real five-stage generation trail and restrained constellation language.
-- The product is an English-language desktop web prototype for clinicians evaluating one virtual doctor's response to a simulated longitudinal chronic-disease case.
+- The product is an English-language desktop web prototype for clinicians evaluating one virtual doctor's response to a longitudinal chronic-disease case. It supports both simulated cohorts and locally approved, de-identified real-world derived cohorts.
 - Required end-to-end screens: sign in, dashboard, case list, evaluation workspace, submission confirmation, assessment history/summary, case feedback, and platform feedback.
-- Use NTU-inspired navy and restrained crimson. Keep the interface clinical, premium, dense but readable, and clearly label all patient information as simulated.
+- Use NTU-inspired navy and restrained crimson. Keep the interface clinical, premium, dense but readable, and label every case accurately as either synthetic or de-identified real-world research data.
+- The local MIMIC-IV HOSP pilot is BP-centred: preserve observed BP, pseudonymise display IDs, flag any limited LOCF fields, and never fabricate unavailable HbA1c, LDL, eGFR, medication, allergy, symptom or history data.
+- Hospital raw-data ingestion accepts ZIP bundles of CSV/CSV.GZ tables through resumable chunks. Discovery and preprocessing run locally; raw patient data must never be sent to a model provider. New structures require Admin-confirmed mappings, and approval releases one immutable dataset version.
+- General hospital preprocessing requires a supported chronic diagnosis and at least ten valid dated visits. Unknown fields or units remain excluded until confirmed; critical clinical values are never imputed; limited LOCF is permitted only for height, weight and BMI with explicit source date and transformation metadata.
 - All MVP2 implementation, data-source copies, tests, launchers and documentation must remain inside the `MVP2` folder.
 - Preserve the unified Doctor/Admin login, real local SQLite storage, Doctor-private peer-blind assessments, Admin dataset governance, two-layer aggregation weights and immutable finalization lock.
 - The current model task is fixed: send visits 1–9 to the provider and withhold visit 10 as reference evidence. Keep model providers behind `worker/model-adapter.js`; never hard-code a provider call in React.

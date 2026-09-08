@@ -25,6 +25,7 @@ export function buildEvidenceCatalog(clinicalData) {
     return Object.entries(visit.clinic_measurements || {}).flatMap(([key, raw]) => {
       const value = raw && typeof raw === "object" ? raw.value : raw;
       if (value === null || value === undefined || value === "") return [];
+      if (raw && typeof raw === "object" && (raw.imputed === true || raw.observed === false)) return [];
       const unit = raw && typeof raw === "object" ? raw.unit || "" : "";
       return [{
         id: evidenceId(visitNumber, key),
@@ -49,12 +50,15 @@ export function validateEvidenceCitations(output, catalog) {
 }
 
 function buildClinicalPrompt(clinicalData, evidenceCatalog) {
+  const recordLabel = clinicalData?.synthetic === false
+    ? "de-identified real-world longitudinal research record"
+    : "simulated longitudinal research record";
   return `You are generating a candidate chronic-care plan for research evaluation by qualified clinicians.
 
 TASK
-Use only visits 1-9 in the supplied simulated longitudinal record. Generate the proposed plan for visit 10. The actual visit-10 record is withheld and must not be inferred or claimed as observed.
+Use only visits 1-9 in the supplied ${recordLabel}. Generate the proposed plan for visit 10. The actual visit-10 record is withheld and must not be inferred or claimed as observed.
 
-SIMULATED CASE DATA (VISITS 1-9 ONLY)
+CASE DATA (VISITS 1-9 ONLY)
 ${JSON.stringify(clinicalData, null, 2)}
 
 ALLOWED SOURCE EVIDENCE IDS (VISITS 1-9 ONLY)
@@ -70,6 +74,8 @@ Use these Markdown sections:
 
 Requirements:
 - Distinguish observed facts from recommendations.
+- Treat fields marked unavailable as unknown. Never convert missingness into a normal finding or invent a medication, laboratory value, symptom, allergy, or history.
+- Treat fields marked imputed as display-support estimates, not observations; state this limitation if they influence a recommendation.
 - Refer to longitudinal trends when relevant.
 - After every sentence that states a patient measurement or trend, append one or more exact source tokens in the form [EVID:V1-SYSTOLIC-BP]. Use only IDs from the allowed list above.
 - Never cite Visit 10 as evidence. Visit 10 is the future plan target and its actual record is withheld.

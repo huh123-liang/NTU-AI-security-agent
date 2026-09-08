@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "test": "node --test tests/*.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs",
-    "data:profile": "node scripts/profile-dataset.mjs"
+    "data:profile": "node scripts/profile-dataset.mjs",
+    "data:mimic-pilot": "python scripts/build-mimic-hosp-pilot.py ../hosp.zip .data/derived/mimic-hosp-bp-pilot-100.zip --limit 100",
+    "data:import-mimic-pilot": "node scripts/import-local-derived-dataset.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

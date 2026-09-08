@@ -10,7 +10,7 @@ import { EmptyState, ErrorState, LoadingState, MetricCard, Modal, PageHeader, St
 export const adminNav = [
   { key: "overview", label: "Overview", icon: Gauge },
   { key: "users", label: "Doctor accounts", icon: UsersThree },
-  { key: "datasets", label: "Dataset governance", icon: Database },
+  { key: "datasets", label: "Data processing", icon: Database },
   { key: "official", label: "Official responses", icon: Robot },
   { key: "evaluations", label: "All evaluations", icon: FileText },
   { key: "aggregation", label: "Aggregation studio", icon: SlidersHorizontal },
@@ -82,15 +82,25 @@ function DoctorAccounts({ notify }) {
 }
 
 function DatasetGovernance({ notify }) {
-  const resource = useResource(api.datasets, []);
+  const resource = useResource(() => Promise.all([api.datasets(), api.ingestionJobs()]), []);
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [jobDetail, setJobDetail] = useState(null);
   const open = async (dataset) => { setSelected(dataset); try { setDetail(await api.dataset(dataset.id)); } catch (error) { notify(error.message); } };
+  const openJob = async (job) => { try { setJobDetail((await api.ingestionJob(job.id)).job); } catch (error) { notify(error.message); } };
   const review = async (status, visibility) => { try { await api.reviewDataset(selected.id, { status, visibility }); notify(`${selected.name}: ${status}, ${visibility}.`); setSelected(null); setDetail(null); resource.refresh(); } catch (error) { notify(error.message); } };
+  useEffect(() => {
+    const jobs = resource.value?.[1]?.items || [];
+    if (!jobs.some((job) => ["Uploading", "Inspecting", "Processing"].includes(job.status))) return undefined;
+    const timer = window.setInterval(resource.refresh, 1500); return () => window.clearInterval(timer);
+  }, [resource.value]);
   if (resource.loading) return <LoadingState label="Loading dataset register…" />;
   if (resource.error) return <ErrorState message={resource.error} retry={resource.refresh} />;
-  const items = resource.value.items;
-  return <div className="content-page"><PageHeader eyebrow="DATASET GOVERNANCE" title="Cohorts, provenance and sharing" copy="Inspect every uploaded source, retain missing-data evidence, and decide whether other doctors may access a cohort." />
+  const [datasets, ingestion] = resource.value;
+  const items = datasets.items;
+  const jobs = ingestion.items;
+  return <div className="content-page"><PageHeader eyebrow="LOCAL DATA PROCESSING PIPELINE" title="Discover, map, preprocess and approve" copy="Raw hospital ZIPs stay local. Confirm inferred field meanings, inspect every transformation and release only an immutable approved version." />
+    <section className="surface admin-ingestion-board"><div className="section-heading"><div><span className="eyebrow">PROCESSING QUEUE</span><h2>Hospital CSV ingestion</h2><p>Doctor uploads require administrative mapping confirmation and release approval.</p></div><span className="table-count">{jobs.length} jobs</span></div>{jobs.length ? <div className="admin-ingestion-list">{jobs.map((job) => <button key={job.id} onClick={() => openJob(job)}><span className="ingestion-stage-icon"><ArrowsClockwise className={["Inspecting", "Processing"].includes(job.status) ? "spin" : ""} size={18} /></span><span><b>{job.name}</b><small>{job.ownerName} · {job.sourceFilename}</small></span><div className="ingestion-progress"><i style={{ width: `${job.progress}%` }} /><small>{titleCase(job.stage.replaceAll("_", " "))} · {job.progress}%</small></div><StatusBadge tone={job.status === "Failed" || job.status === "Rejected" ? "danger" : job.status === "Approved" ? "success" : "warning"}>{job.status}</StatusBadge><ArrowRight size={16} /></button>)}</div> : <EmptyState icon={Database} title="No hospital preprocessing jobs" copy="A Doctor can upload a ZIP containing multiple CSV or CSV.GZ tables from the Datasets page." />}</section>
     <section className="surface table-surface"><table className="data-table"><thead><tr><th>Dataset</th><th>Owner</th><th>Data quality</th><th>Status</th><th>Visibility</th><th>Imported</th><th /></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td><b>{item.name}</b><small>{item.sourceFilename}</small></td><td>{item.ownerName}</td><td><b className="success-text">{item.validCount} valid</b><small className={item.quarantinedCount ? "danger-text" : ""}>{item.quarantinedCount} quarantined · {item.declaredCount} declared</small></td><td><StatusBadge>{item.status}</StatusBadge></td><td>{titleCase(item.visibility)}</td><td>{dateTime(item.createdAt)}</td><td><button className="row-button" onClick={() => open(item)}><Eye size={17} />Review</button></td></tr>)}</tbody></table></section>
     {selected && <Modal wide title={selected.name} copy="Source provenance, validation results and the administrative release decision." onClose={() => { setSelected(null); setDetail(null); }}>
       {!detail ? <LoadingState label="Reading validation report…" /> : <div className="dataset-review"><div className="provenance-grid"><span>SHA-256<b className="hash-value">{selected.sourceSha256}</b></span><span>Format<b>{selected.sourceFormat}</b></span><span>Declared<b>{selected.declaredCount}</b></span><span>Accepted<b>{selected.validCount}</b></span></div>
@@ -99,7 +109,37 @@ function DatasetGovernance({ notify }) {
         <div className="modal-actions"><button className="danger-button" onClick={() => review("Rejected", "private")}>Reject &amp; keep private</button><button className="secondary-button" onClick={() => review("Approved", "private")}>Approve for owner only</button><button className="primary-button" onClick={() => review("Approved", "shared")}>Approve &amp; share</button></div>
       </div>}
     </Modal>}
+    {jobDetail && <AdminIngestionModal initialJob={jobDetail} onClose={() => setJobDetail(null)} onChanged={() => { setJobDetail(null); resource.refresh(); }} notify={notify} />}
   </div>;
+}
+
+function AdminIngestionModal({ initialJob, onClose, onChanged, notify }) {
+  const [job, setJob] = useState(initialJob);
+  const [mapping, setMapping] = useState(initialJob.mapping || { tables: [] });
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setJob(initialJob); setMapping(initialJob.mapping || { tables: [] }); }, [initialJob]);
+  useEffect(() => {
+    if (!["Inspecting", "Processing"].includes(job.status)) return undefined;
+    const timer = window.setInterval(async () => { const next = (await api.ingestionJob(job.id)).job; setJob(next); setMapping(next.mapping || { tables: [] }); }, 1300);
+    return () => window.clearInterval(timer);
+  }, [job.id, job.status]);
+  const updateRole = (entry, role) => setMapping((current) => ({ ...current, tables: current.tables.map((table) => table.entry === entry ? { ...table, role } : table) }));
+  const updateField = (entry, field, canonical) => setMapping((current) => ({ ...current, tables: current.tables.map((table) => table.entry === entry ? { ...table, fields: { ...table.fields, [field]: canonical } } : table) }));
+  const start = async () => { setBusy(true); try { await api.saveIngestionMapping(job.id, mapping); await api.processIngestion(job.id); notify("Mapping confirmed. Local preprocessing started."); onChanged(); } catch (error) { notify(error.message); } finally { setBusy(false); } };
+  const retry = async () => { setBusy(true); try { await api.retryIngestion(job.id); notify("Processing retry started."); onChanged(); } catch (error) { notify(error.message); } finally { setBusy(false); } };
+  const decide = async (decision, visibility = "private") => { setBusy(true); try { await api.approveIngestion(job.id, { decision, visibility }); notify(`${job.name}: ${decision}.`); onChanged(); } catch (error) { notify(error.message); } finally { setBusy(false); } };
+  const discovery = job.discovery || {};
+  const quality = job.quality || {};
+  const fieldLookup = new Map((discovery.tables || []).map((table) => [table.entry, table]));
+  return <Modal wide className="ingestion-admin-modal" title={job.name} copy={`${job.ownerName} · ${job.sourceFilename} · ${job.status}`} onClose={onClose}>
+    <div className="ingestion-stage-strip">{[["uploading", "Upload"], ["inspecting", "Discover"], ["awaiting_mapping", "Map"], ["processing", "Process"], ["quality_review", "Approve"]].map(([stage, label], index) => { const order = ["uploading", "inspecting", "awaiting_mapping", "processing", "building_cases", "quality_review", "approved"]; const current = order.indexOf(job.stage); const target = order.indexOf(stage); return <span className={current >= target ? "done" : ""} key={stage}><b>{index + 1}</b>{label}</span>; })}</div>
+    <div className="quality-metrics"><div><small>Progress</small><strong>{job.progress}%</strong></div><div><small>Detected tables</small><strong>{discovery.tableCount ?? "—"}</strong></div><div className="success"><small>Eligible cases</small><strong>{quality.eligibleCases ?? "—"}</strong></div><div className="danger"><small>Quarantined</small><strong>{quality.quarantinedCases ?? "—"}</strong></div></div>
+    {job.status === "Awaiting Mapping" && <><div className="mapping-safety-note"><ShieldCheck size={19} /><div><b>Human confirmation boundary</b><p>Suggestions are local and rules-based. Low-confidence fields remain ignored; no raw patient value is sent to DeepSeek.</p></div></div><div className="mapping-table-list">{(mapping.tables || []).map((table) => { const discovered = fieldLookup.get(table.entry); return <section key={table.entry}><header><div><b>{table.entry}</b><small>{discovered?.sampleRows || 0} rows sampled · {(discovered?.uncompressedSize / 1024 / 1024 || 0).toFixed(1)} MB expanded</small></div><label>Table role<select value={table.role} onChange={(event) => updateRole(table.entry, event.target.value)}><option value="patient">Patient</option><option value="encounter">Encounter</option><option value="diagnosis">Diagnosis</option><option value="dictionary">Code dictionary</option><option value="observation">Observation</option><option value="mixed">Mixed</option><option value="ignore">Ignore table</option></select></label></header><div className="mapping-field-grid"><span>Source field</span><span>Detected evidence</span><span>Canonical field</span>{(discovered?.fields || []).map((field) => <div className="mapping-field-row" key={field.name}><b>{field.name}</b><span><small>{Math.round(field.confidence * 100)}% confidence</small>{field.sample?.length ? field.sample.join(" · ").slice(0, 90) : "No non-empty sample"}</span><select value={table.fields?.[field.name] || "ignore"} onChange={(event) => updateField(table.entry, field.name, event.target.value)}>{(discovery.canonicalFields || ["ignore"]).map((item) => <option value={item} key={item}>{item.replaceAll("_", " ")}</option>)}</select></div>)}</div></section>; })}</div><div className="modal-actions"><button className="secondary-button" onClick={onClose}>Close without changes</button><button className="primary-button" disabled={busy} onClick={start}>{busy ? <ArrowsClockwise className="spin" size={16} /> : <ShieldCheck size={16} />}Confirm mapping &amp; preprocess</button></div></>}
+    {["Inspecting", "Processing", "Uploading"].includes(job.status) && <LoadingState label={`${titleCase(job.stage.replaceAll("_", " "))} · ${job.progress}%`} />}
+    {job.status === "Awaiting Approval" && <><div className="quality-review-grid"><article><b>Clinical eligibility</b><strong>{quality.eligibleCases || 0}</strong><p>At least 10 dated visits with valid clinical information and a supported chronic diagnosis.</p></article><article><b>Source measurements</b><strong>{quality.validMeasurements || 0}</strong><p>{quality.invalidMeasurements || 0} invalid or unparseable measurements excluded.</p></article><article><b>Transparent imputation</b><strong>{quality.imputedFields || 0}</strong><p>Only limited height, weight or BMI LOCF; critical clinical values were never fabricated.</p></article></div><div className="mapping-safety-note"><ShieldCheck size={19} /><div><b>Approval creates an immutable version</b><p>Visits 1–9 become model input and Visit 10 remains withheld. The Doctor cannot open these cases until approval.</p></div></div><div className="modal-actions"><button className="danger-button" disabled={busy} onClick={() => decide("Rejected")}>Reject version</button><button className="secondary-button" disabled={busy} onClick={() => decide("Approved", "private")}>Approve for uploader</button><button className="primary-button" disabled={busy} onClick={() => decide("Approved", "shared")}>Approve &amp; share</button></div></>}
+    {job.status === "Failed" && <><div className="form-error"><WarningCircle size={18} />{job.errorMessage || "Processing failed."}</div><div className="modal-actions"><button className="secondary-button" onClick={onClose}>Close</button><button className="primary-button" disabled={busy} onClick={retry}><ArrowsClockwise size={16} />Retry current stage</button></div></>}
+    {["Approved", "Rejected", "Cancelled"].includes(job.status) && <div className="mapping-safety-note"><CheckCircle size={19} /><div><b>{job.status}</b><p>This decision and the exact processed version remain in the local audit trail.</p></div></div>}
+  </Modal>;
 }
 
 function OfficialRuns({ notify }) {

@@ -63,6 +63,14 @@ function migrateStudyGovernance(db) {
   db.exec("CREATE INDEX IF NOT EXISTS idx_runs_case_study ON agent_runs(case_id, study_status)");
 }
 
+function migrateDatasetVersioning(db) {
+  ensureColumn(db, "cases", "dataset_version_id", "TEXT");
+  ensureColumn(db, "agent_runs", "dataset_version_id", "TEXT");
+  ensureColumn(db, "agent_runs", "case_snapshot_hash", "TEXT");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_cases_dataset_version ON cases(dataset_version_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_runs_dataset_version ON agent_runs(dataset_version_id)");
+}
+
 export function getDatabase(root) {
   if (instance?.root === root) return instance.db;
   const dataDir = path.join(root, ".data");
@@ -74,6 +82,7 @@ export function getDatabase(root) {
   db.exec(readFileSync(schemaPath, "utf8"));
   migrateRunLifecycle(db);
   migrateStudyGovernance(db);
+  migrateDatasetVersioning(db);
   seedAdmin(db);
   db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now());
   instance = { root, db };

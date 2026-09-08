@@ -384,3 +384,43 @@ button:disabled { opacity:.55; cursor:not-allowed; }
   .generation-orbit:after,.generation-data-route span.active,.generation-trail .active i { animation:none; }
   .timeline-card .timeline > div,.trend-card,.evidence-citation { transition:none; }
 }
+
+/* Governed hospital CSV preprocessing */
+.ingestion-task-panel,.admin-ingestion-board { padding:18px; }
+.ingestion-task-panel { margin-bottom:14px; }
+.ingestion-task-list,.admin-ingestion-list { display:grid; gap:7px; }
+.ingestion-task-list > button,.admin-ingestion-list > button { min-height:60px; display:grid; grid-template-columns:34px minmax(220px,1.4fr) minmax(180px,1fr) auto; align-items:center; gap:12px; padding:10px 12px; border:1px solid #dbe5ee; border-radius:7px; color:var(--ink); background:#fff; text-align:left; cursor:pointer; transition:border-color .16s ease,box-shadow .16s ease,transform .16s ease; }
+.admin-ingestion-list > button { grid-template-columns:34px minmax(260px,1.4fr) minmax(220px,1fr) auto 18px; }
+.ingestion-task-list > button:hover,.admin-ingestion-list > button:hover { border-color:#9fc0dc; box-shadow:0 7px 18px rgba(24,74,128,.07); transform:translateY(-1px); }
+.ingestion-task-list b,.ingestion-task-list small,.admin-ingestion-list b,.admin-ingestion-list small { display:block; }
+.ingestion-task-list b,.admin-ingestion-list b { font-size:9px; }
+.ingestion-task-list small,.admin-ingestion-list small { margin-top:3px; color:var(--muted); font-size:7px; }
+.ingestion-stage-icon { width:32px; height:32px; display:grid; place-items:center; border-radius:50%; color:#246495; background:#edf6fc; }
+.ingestion-progress { display:grid; grid-template-columns:1fr auto; align-items:center; gap:7px; }
+.ingestion-progress:before { content:""; grid-column:1; grid-row:1; height:5px; border-radius:4px; background:#e6edf3; }
+.ingestion-progress i { grid-column:1; grid-row:1; display:block; height:5px; max-width:100%; border-radius:4px; background:linear-gradient(90deg,#2b70a8,#1f8a69); }
+.ingestion-progress small { grid-column:2; grid-row:1; margin:0; white-space:nowrap; }
+.upload-progress { width:min(460px,90%); display:grid; grid-template-columns:1fr auto; align-items:center; gap:9px; margin:10px auto 0; }
+.upload-progress:before { content:""; grid-column:1; grid-row:1; height:7px; border-radius:5px; background:#e4ebf2; }
+.upload-progress i { grid-column:1; grid-row:1; height:7px; border-radius:5px; background:linear-gradient(90deg,#24699f,#1e8a67); }
+.upload-progress span { color:#43617e; font-size:8px; font-weight:700; }
+.modal.ingestion-admin-modal { width:min(94vw,1320px); max-height:92vh; overflow:auto; }
+.ingestion-stage-strip { display:grid; grid-template-columns:repeat(5,1fr); gap:5px; padding:12px; margin-bottom:14px; border:1px solid #dde7ef; border-radius:7px; background:#f7f9fb; }
+.ingestion-stage-strip span { position:relative; display:flex; align-items:center; justify-content:center; gap:6px; color:#8997a6; font-size:8px; font-weight:700; }
+.ingestion-stage-strip span:not(:last-child):after { content:""; position:absolute; width:24%; height:1px; right:-14%; background:#d2dce6; }
+.ingestion-stage-strip b { width:20px; height:20px; display:grid; place-items:center; border:1px solid #ccd8e4; border-radius:50%; background:#fff; font-size:7px; }
+.ingestion-stage-strip .done { color:#176d50; }.ingestion-stage-strip .done b { border-color:#2e8a69; color:#fff; background:#2e8a69; }
+.mapping-safety-note { display:flex; gap:10px; margin:14px 0; padding:12px 14px; border:1px solid #bcdcca; border-radius:7px; color:#21684f; background:#f0faf5; }
+.mapping-safety-note b { display:block; font-size:9px; }.mapping-safety-note p { margin:3px 0 0; color:#4d7365; font-size:8px; line-height:1.55; }
+.mapping-table-list { display:grid; gap:12px; max-height:50vh; overflow:auto; padding-right:4px; }
+.mapping-table-list > section { border:1px solid #dbe5ee; border-radius:7px; overflow:hidden; }
+.mapping-table-list > section > header { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:11px 13px; background:#f7f9fc; }
+.mapping-table-list header b,.mapping-table-list header small { display:block; }.mapping-table-list header b { font-size:9px; }.mapping-table-list header small { margin-top:3px; color:var(--muted); font-size:7px; }
+.mapping-table-list header label { display:flex; align-items:center; gap:7px; margin:0; color:#5f7185; font-size:7px; }.mapping-table-list select { min-height:30px; padding:0 25px 0 8px; border:1px solid #ccd9e5; border-radius:4px; color:#27445f; background:#fff; font-size:8px; }
+.mapping-field-grid { display:grid; grid-template-columns:1fr 1.5fr 1fr; }
+.mapping-field-grid > span { padding:7px 11px; border-top:1px solid #e2eaf1; color:#718196; background:#fbfcfd; font-size:7px; font-weight:800; text-transform:uppercase; }
+.mapping-field-row { display:contents; }
+.mapping-field-row > * { min-height:45px; display:flex; align-items:center; padding:8px 11px; border-top:1px solid #e7edf3; }
+.mapping-field-row > b { color:#294660; font-size:8px; }.mapping-field-row > span { display:grid; align-content:center; color:#60758b; font-size:7px; overflow-wrap:anywhere; }.mapping-field-row > span small { color:#2b6f9f; font-size:6.5px; font-weight:750; }.mapping-field-row > select { align-self:center; margin:6px 10px; }
+.quality-review-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0; }.quality-review-grid article { padding:15px; border:1px solid #dce6ee; border-radius:7px; background:#fff; }.quality-review-grid b,.quality-review-grid strong { display:block; }.quality-review-grid b { color:#667a8f; font-size:8px; }.quality-review-grid strong { margin:8px 0; color:#163b5c; font-size:26px; }.quality-review-grid p { margin:0; color:#6d7e91; font-size:8px; line-height:1.55; }
+@media (max-width:1280px) { .ingestion-task-list > button,.admin-ingestion-list > button { grid-template-columns:32px minmax(190px,1fr) minmax(150px,.8fr) auto; }.admin-ingestion-list > button > svg:last-child { display:none; }.mapping-field-grid { grid-template-columns:1fr 1.25fr .9fr; } }

@@ -43,6 +43,19 @@ function Find-Npm([string]$NodeExe) {
   return $null
 }
 
+function Find-Python {
+  $command = Get-Command python.exe -ErrorAction SilentlyContinue
+  if ($command -and (Test-Path -LiteralPath $command.Source)) { return $command.Source }
+  foreach ($candidate in @(
+    (Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"),
+    (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
+    (Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe")
+  )) {
+    if (Test-Path -LiteralPath $candidate) { return $candidate }
+  }
+  return $null
+}
+
 function Test-KeyConfigured {
   if (-not (Test-Path -LiteralPath $EnvFile)) { return $false }
   foreach ($line in Get-Content -LiteralPath $EnvFile -Encoding UTF8) {
@@ -90,7 +103,7 @@ Write-Host "Project: $ProjectRoot"
 Write-Host "This wizard installs local dependencies, configures the model backend,"
 Write-Host "builds and tests the platform, then starts it. Your API key stays on this PC."
 
-Write-Step 1 "Checking Node.js / 检查 Node.js"
+Write-Step 1 "Checking Node.js and Python / 检查 Node.js 与 Python"
 $NodeExe = Find-Node
 if (-not $NodeExe) {
   Write-Host "Node.js 20 or later is required but was not found." -ForegroundColor Yellow
@@ -109,6 +122,21 @@ if ($NodeMajor -lt 20) {
 $NpmExe = Find-Npm $NodeExe
 if (-not $NpmExe) { Stop-WithMessage "npm.cmd was not found next to Node.js. Reinstall the Node.js LTS package." }
 Write-Host "Node.js $NodeVersion detected." -ForegroundColor Green
+$PythonExe = Find-Python
+if (-not $PythonExe) {
+  Write-Host "Python 3.10 or later is required for large hospital CSV preprocessing." -ForegroundColor Yellow
+  Write-Host "Install Python from: https://www.python.org/downloads/windows/"
+  if (-not $NonInteractive -and (Read-YesNo "Open the Python download page now? / 是否打开 Python 下载页面？" $true)) {
+    Start-Process "https://www.python.org/downloads/windows/"
+  }
+  Stop-WithMessage "Install Python 3.10 or later, enable Add Python to PATH, then run this wizard again."
+}
+$PythonVersion = (& $PythonExe -c "import platform; print(platform.python_version())").Trim()
+$PythonMajorMinor = $PythonVersion.Split(".")
+if ([int]$PythonMajorMinor[0] -lt 3 -or ([int]$PythonMajorMinor[0] -eq 3 -and [int]$PythonMajorMinor[1] -lt 10)) {
+  Stop-WithMessage "Python $PythonVersion is too old. Install Python 3.10 or later."
+}
+Write-Host "Python $PythonVersion detected for local hospital-data preprocessing." -ForegroundColor Green
 
 Write-Step 2 "Installing project dependencies / 安装项目依赖"
 $DependenciesMissing = -not (Test-Path -LiteralPath (Join-Path $ProjectRoot "node_modules"))
@@ -156,6 +184,7 @@ $status = [ordered]@{
   installedAt = (Get-Date).ToUniversalTime().ToString("o")
   projectRoot = $ProjectRoot
   nodeVersion = $NodeVersion
+  pythonVersion = $PythonVersion
   modelProvider = "deepseek"
   modelKeyConfigured = [bool]$KeyConfigured
   buildVerified = $true

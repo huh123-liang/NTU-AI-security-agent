@@ -11,7 +11,7 @@ const request = async (path, options = {}) => {
   const response = await fetch(`/api/v1${path}`, {
     ...options,
     headers: {
-      "content-type": "application/json",
+      ...(typeof options.body === "string" ? { "content-type": "application/json" } : {}),
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },
@@ -40,6 +40,15 @@ export const api = {
   datasets: () => request("/datasets"),
   dataset: (id) => request(`/datasets/${encodeURIComponent(id)}`),
   uploadDataset: (payload) => request("/datasets/import", { method: "POST", body: json(payload) }),
+  ingestionJobs: () => request("/ingestion/jobs"),
+  ingestionJob: (id) => request(`/ingestion/jobs/${encodeURIComponent(id)}`),
+  createIngestionJob: (payload) => request("/ingestion/jobs", { method: "POST", body: json(payload) }),
+  completeIngestionUpload: (id) => request(`/ingestion/jobs/${encodeURIComponent(id)}/complete`, { method: "POST", body: "{}" }),
+  cancelIngestion: (id) => request(`/ingestion/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" }),
+  retryIngestion: (id) => request(`/ingestion/jobs/${encodeURIComponent(id)}/retry`, { method: "POST", body: "{}" }),
+  saveIngestionMapping: (id, mapping) => request(`/admin/ingestion/jobs/${encodeURIComponent(id)}/mapping`, { method: "PUT", body: json({ mapping }) }),
+  processIngestion: (id, rules = {}) => request(`/admin/ingestion/jobs/${encodeURIComponent(id)}/process`, { method: "POST", body: json({ rules }) }),
+  approveIngestion: (id, payload) => request(`/admin/ingestion/jobs/${encodeURIComponent(id)}/approval`, { method: "POST", body: json(payload) }),
   reviewDataset: (id, payload) => request(`/admin/datasets/${encodeURIComponent(id)}/review`, { method: "PATCH", body: json(payload) }),
   cases: (datasetId, { search = "", page = 1, limit = 40 } = {}) => request(`/datasets/${encodeURIComponent(datasetId)}/cases?search=${encodeURIComponent(search)}&page=${page}&limit=${limit}`),
   case: (id) => request(`/cases/${encodeURIComponent(id)}`),
@@ -61,6 +70,33 @@ export const api = {
   finalizeAggregation: (payload) => request("/admin/finalizations", { method: "POST", body: json(payload) }),
   finalizations: () => request("/admin/finalizations"),
 };
+
+export async function uploadHospitalZip(file, { name, description = "", onProgress = () => {} } = {}) {
+  const created = await api.createIngestionJob({ fileName: file.name, size: file.size, name: name || file.name.replace(/\.zip$/i, ""), description });
+  const jobId = created.job.id;
+  const chunkSize = 4 * 1024 * 1024;
+  let offset = Number(created.job.receivedBytes || 0);
+  while (offset < file.size) {
+    const chunk = file.slice(offset, Math.min(file.size, offset + chunkSize));
+    const token = sessionStore.get();
+    const response = await fetch(`/api/v1/ingestion/jobs/${encodeURIComponent(jobId)}/chunks`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-upload-offset": String(offset),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: chunk,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Chunk upload failed (${response.status}).`);
+    offset = Number(payload.receivedBytes || offset + chunk.size);
+    onProgress({ stage: "uploading", percent: Math.round(offset / file.size * 100), jobId });
+  }
+  const completed = await api.completeIngestionUpload(jobId);
+  onProgress({ stage: "inspecting", percent: 100, jobId });
+  return completed.job;
+}
 
 export async function fileToBase64(file) {
   const bytes = new Uint8Array(await file.arrayBuffer());

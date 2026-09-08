@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { getDatabase, publicUser, hashPassword, verifyPassword, createSession, getAuthenticatedUser, removeSession, audit, id, now, sha256, withTransaction } from "./database.mjs";
 import { importDatasetBuffer, ensureBundledDataset } from "./dataset-importer.mjs";
+import { createIngestionService } from "./ingestion-service.mjs";
 import { previewAggregation, finalizeAggregation } from "./aggregation.mjs";
 import { CRITERIA, safeJson, round } from "./domain.mjs";
 import { buildEvidenceCatalog, runMedicalModel, supportedProviders, PROMPT_VERSION, validateEvidenceCitations } from "../worker/model-adapter.js";
@@ -58,13 +59,17 @@ const datasetDto = (row) => ({
   reviewedAt: row.reviewed_at,
 });
 
-const caseDto = (row, includeClinical = false) => ({
+const caseDto = (row, includeClinical = false) => {
+  const clinicalData = safeJson(row.clinical_json, {});
+  return ({
   id: row.id,
   datasetId: row.dataset_id,
+  datasetVersionId: row.dataset_version_id || null,
   datasetName: row.dataset_name,
   patientId: row.patient_id,
   patientName: row.patient_id,
   age: row.age,
+  ageTopCoded: clinicalData.age_top_coded === true,
   sex: row.sex,
   ethnicity: row.ethnicity,
   condition: row.condition_summary,
@@ -72,8 +77,10 @@ const caseDto = (row, includeClinical = false) => ({
   visits: Number(row.visit_count),
   sourceEntry: row.source_entry,
   sourceSha256: row.source_sha256,
-  ...(includeClinical ? { clinicalData: safeJson(row.clinical_json, {}), referenceVisit: safeJson(row.reference_visit_json, {}) } : {}),
-});
+  recordType: clinicalData.synthetic === false ? "deidentified_real_world" : "synthetic",
+  ...(includeClinical ? { clinicalData, referenceVisit: safeJson(row.reference_visit_json, {}) } : {}),
+  });
+};
 
 export function deserializeEvidenceValidation(value) {
   const evidence = safeJson(value, { evidenceLinks: [], invalidCitations: [] });
@@ -146,10 +153,12 @@ function assessmentDto(db, row) {
   };
 }
 
-function datasetAccessRow(db, user, datasetId) {
+function datasetAccessRow(db, user, datasetId, requireApproved = false) {
   const row = db.prepare("SELECT * FROM datasets WHERE id = ?").get(datasetId);
   if (!row) return null;
-  if (user.role === "admin" || row.owner_id === user.id || (row.visibility === "shared" && row.status === "Approved")) return row;
+  if (user.role === "admin") return row;
+  if (requireApproved && row.status !== "Approved") return null;
+  if (row.owner_id === user.id || (row.visibility === "shared" && row.status === "Approved")) return row;
   return null;
 }
 
@@ -157,7 +166,7 @@ function caseAccessRow(db, user, caseId) {
   const row = db.prepare(`SELECT c.*, d.name AS dataset_name, d.owner_id, d.visibility, d.status AS dataset_status
     FROM cases c JOIN datasets d ON d.id = c.dataset_id WHERE c.id = ?`).get(caseId);
   if (!row) return null;
-  if (user.role === "admin" || row.owner_id === user.id || (row.visibility === "shared" && row.dataset_status === "Approved")) return row;
+  if (user.role === "admin" || (row.dataset_status === "Approved" && (row.owner_id === user.id || row.visibility === "shared"))) return row;
   return null;
 }
 
@@ -180,6 +189,7 @@ function joinedAssessmentRows(db, where = "1 = 1", parameters = []) {
 
 export function localApiPlugin(root, modelConfig = {}) {
   const db = getDatabase(root);
+  const ingestion = createIngestionService({ db, root });
   const activeJobs = new Map();
   let bootstrapError = null;
   try { ensureBundledDataset({ db, root }); }
@@ -284,11 +294,14 @@ export function localApiPlugin(root, modelConfig = {}) {
     const runId = id("RUN");
     const startedAt = now();
     const history = [{ stage: "preparing_data", at: startedAt }];
+    const snapshotJson = JSON.stringify(inputSnapshot);
     db.prepare(`INSERT INTO agent_runs (id, case_id, created_by, provider, model_version, prompt_version, status, lifecycle_status,
-      stage, stage_history_json, evidence_links_json, cancel_requested, study_status, aggregation_config_json, input_snapshot_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'Running', 'Running', 'preparing_data', ?, '{}', 0, ?, ?, ?, ?, ?)`)
+      stage, stage_history_json, evidence_links_json, cancel_requested, study_status, aggregation_config_json, input_snapshot_json,
+      dataset_version_id, case_snapshot_hash, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'Running', 'Running', 'preparing_data', ?, '{}', 0, ?, ?, ?, ?, ?, ?, ?)`)
       .run(runId, selectedCase.id, userId, modelConfig.provider || "deepseek", modelConfig.model || "pending", PROMPT_VERSION,
-        JSON.stringify(history), official ? "Official pending" : "Sandbox", JSON.stringify(DEFAULT_AGGREGATION_CONFIG), JSON.stringify(inputSnapshot), startedAt, startedAt);
+        JSON.stringify(history), official ? "Official pending" : "Sandbox", JSON.stringify(DEFAULT_AGGREGATION_CONFIG), snapshotJson,
+        selectedCase.dataset_version_id || null, sha256(snapshotJson), startedAt, startedAt);
     audit(db, userId, official ? "official_run.started" : "agent_run.started", "agent_run", runId, { caseId: selectedCase.id });
     setImmediate(() => executeRun(runId));
     return db.prepare(`SELECT r.*, u.display_name AS creator_name, 0 AS assessment_count
@@ -384,6 +397,63 @@ export function localApiPlugin(root, modelConfig = {}) {
             return send(res, 200, { items: rows.map(datasetDto) });
           }
 
+          if (pathname === "/ingestion/jobs" && method === "GET") {
+            return send(res, 200, { items: ingestion.list(user) });
+          }
+
+          if (pathname === "/ingestion/jobs" && method === "POST") {
+            return send(res, 201, { job: ingestion.create(user, await readBody(req)) });
+          }
+
+          const ingestionJobMatch = pathname.match(/^\/ingestion\/jobs\/([^/]+)$/);
+          if (ingestionJobMatch && method === "GET") {
+            const job = ingestion.get(user, decodeURIComponent(ingestionJobMatch[1]));
+            return job ? send(res, 200, { job }) : send(res, 404, { error: "Ingestion job not found or not available to this account." });
+          }
+
+          const ingestionChunkMatch = pathname.match(/^\/ingestion\/jobs\/([^/]+)\/chunks$/);
+          if (ingestionChunkMatch && method === "POST") {
+            const offset = Number(req.headers["x-upload-offset"] || 0);
+            const result = await ingestion.appendChunk(user, decodeURIComponent(ingestionChunkMatch[1]), req, offset);
+            return result?.error === "not_found" ? send(res, 404, { error: "Ingestion job not found." }) : send(res, 200, result);
+          }
+
+          const ingestionCompleteMatch = pathname.match(/^\/ingestion\/jobs\/([^/]+)\/complete$/);
+          if (ingestionCompleteMatch && method === "POST") {
+            const job = await ingestion.complete(user, decodeURIComponent(ingestionCompleteMatch[1]));
+            return job ? send(res, 200, { job }) : send(res, 404, { error: "Ingestion job not found." });
+          }
+
+          const ingestionCancelMatch = pathname.match(/^\/ingestion\/jobs\/([^/]+)\/cancel$/);
+          if (ingestionCancelMatch && method === "POST") {
+            const job = ingestion.cancel(user, decodeURIComponent(ingestionCancelMatch[1]));
+            return job ? send(res, 200, { job }) : send(res, 404, { error: "Ingestion job not found." });
+          }
+
+          const ingestionRetryMatch = pathname.match(/^\/ingestion\/jobs\/([^/]+)\/retry$/);
+          if (ingestionRetryMatch && method === "POST") {
+            const job = ingestion.retry(user, decodeURIComponent(ingestionRetryMatch[1]));
+            return job ? send(res, 200, { job }) : send(res, 404, { error: "Ingestion job not found." });
+          }
+
+          const ingestionMappingMatch = pathname.match(/^\/admin\/ingestion\/jobs\/([^/]+)\/mapping$/);
+          if (ingestionMappingMatch && method === "PUT") {
+            const job = ingestion.saveMapping(user, decodeURIComponent(ingestionMappingMatch[1]), (await readBody(req)).mapping);
+            return job ? send(res, 200, { job }) : send(res, 404, { error: "Ingestion job not found." });
+          }
+
+          const ingestionProcessMatch = pathname.match(/^\/admin\/ingestion\/jobs\/([^/]+)\/process$/);
+          if (ingestionProcessMatch && method === "POST") {
+            const job = ingestion.process(user, decodeURIComponent(ingestionProcessMatch[1]), (await readBody(req)).rules || {});
+            return job ? send(res, 202, { job }) : send(res, 404, { error: "Ingestion job not found." });
+          }
+
+          const ingestionApprovalMatch = pathname.match(/^\/admin\/ingestion\/jobs\/([^/]+)\/approval$/);
+          if (ingestionApprovalMatch && method === "POST") {
+            const job = ingestion.approve(user, decodeURIComponent(ingestionApprovalMatch[1]), await readBody(req));
+            return job ? send(res, 200, { job }) : send(res, 404, { error: "Ingestion job not found." });
+          }
+
           if (pathname === "/datasets/import" && method === "POST") {
             const body = await readBody(req);
             const fileName = String(body.fileName || "");
@@ -403,9 +473,14 @@ export function localApiPlugin(root, modelConfig = {}) {
             const dataset = datasetAccessRow(db, user, decodeURIComponent(datasetMatch[1]));
             if (!dataset) return send(res, 404, { error: "Dataset not found or not available to this account." });
             const owner = db.prepare("SELECT display_name AS owner_name FROM users WHERE id = ?").get(dataset.owner_id);
+            const versions = db.prepare(`SELECT id,version_number,status,source_sha256,quality_json,created_at,approved_at
+              FROM dataset_versions WHERE dataset_id=? ORDER BY version_number DESC`).all(dataset.id).map((item) => ({
+                id: item.id, versionNumber: Number(item.version_number), status: item.status, sourceSha256: item.source_sha256,
+                quality: safeJson(item.quality_json, {}), createdAt: item.created_at, approvedAt: item.approved_at,
+              }));
             const issues = db.prepare("SELECT * FROM dataset_issues WHERE dataset_id = ? ORDER BY CASE severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END, patient_id LIMIT 250").all(dataset.id)
               .map((item) => ({ id: item.id, patientId: item.patient_id, severity: item.severity, code: item.code, message: item.message, details: safeJson(item.details_json, {}) }));
-            return send(res, 200, { dataset: datasetDto({ ...dataset, ...owner }), issues });
+            return send(res, 200, { dataset: datasetDto({ ...dataset, ...owner }), versions, issues });
           }
 
           const reviewDatasetMatch = pathname.match(/^\/admin\/datasets\/([^/]+)\/review$/);
@@ -417,6 +492,14 @@ export function localApiPlugin(root, modelConfig = {}) {
             const visibility = body.visibility === "shared" ? "shared" : "private";
             db.prepare("UPDATE datasets SET status = ?, visibility = ?, reviewed_at = ?, reviewed_by = ? WHERE id = ?")
               .run(status, visibility, now(), user.id, datasetId);
+            const version = db.prepare("SELECT id, ingestion_job_id FROM dataset_versions WHERE dataset_id=? ORDER BY version_number DESC LIMIT 1").get(datasetId);
+            if (version) {
+              const reviewedAt = now();
+              db.prepare("UPDATE dataset_versions SET status=?, approved_by=?, approved_at=? WHERE id=?")
+                .run(status, user.id, reviewedAt, version.id);
+              if (version.ingestion_job_id) db.prepare("UPDATE ingestion_jobs SET status=?, stage=?, updated_at=? WHERE id=?")
+                .run(status, status === "Approved" ? "approved" : status === "Rejected" ? "rejected" : "quality_review", reviewedAt, version.ingestion_job_id);
+            }
             audit(db, user.id, "dataset.reviewed", "dataset", datasetId, { status, visibility });
             return send(res, 200, { ok: true, status, visibility });
           }
@@ -424,7 +507,7 @@ export function localApiPlugin(root, modelConfig = {}) {
           const datasetCasesMatch = pathname.match(/^\/datasets\/([^/]+)\/cases$/);
           if (datasetCasesMatch && method === "GET") {
             const datasetId = decodeURIComponent(datasetCasesMatch[1]);
-            const dataset = datasetAccessRow(db, user, datasetId);
+            const dataset = datasetAccessRow(db, user, datasetId, true);
             if (!dataset) return send(res, 404, { error: "Dataset not found or not available to this account." });
             const search = `%${String(url.searchParams.get("search") || "").trim()}%`;
             const page = Math.max(1, Number(url.searchParams.get("page") || 1));
@@ -448,7 +531,7 @@ export function localApiPlugin(root, modelConfig = {}) {
               FROM cases c JOIN datasets d ON d.id = c.dataset_id
               LEFT JOIN agent_runs r ON r.id = (SELECT r2.id FROM agent_runs r2 WHERE r2.case_id = c.id
                 AND r2.study_status IN ('Official', 'Official pending', 'Official failed') ORDER BY CASE r2.study_status WHEN 'Official' THEN 0 WHEN 'Official pending' THEN 1 ELSE 2 END, r2.created_at DESC LIMIT 1)
-              WHERE (? = '' OR c.dataset_id = ?) AND (c.patient_id LIKE ? OR c.condition_summary LIKE ?)
+              WHERE d.status = 'Approved' AND (? = '' OR c.dataset_id = ?) AND (c.patient_id LIKE ? OR c.condition_summary LIKE ?)
               ORDER BY c.patient_id LIMIT 100`).all(datasetId, datasetId, search, search);
             return send(res, 200, { items: rows.map((row) => ({
               ...caseDto(row), officialRun: row.run_id ? {
@@ -464,12 +547,24 @@ export function localApiPlugin(root, modelConfig = {}) {
             return send(res, 200, { case: caseDto(row, true) });
           }
 
+          const caseLineageMatch = pathname.match(/^\/cases\/([^/]+)\/lineage$/);
+          if (caseLineageMatch && method === "GET") {
+            const caseId = decodeURIComponent(caseLineageMatch[1]);
+            if (!caseAccessRow(db, user, caseId)) return send(res, 404, { error: "Case not found or not available to this account." });
+            const rows = db.prepare(`SELECT canonical_path,source_file,source_row,source_column,original_json,transformed_json,rule_json
+              FROM record_lineage WHERE case_id=? ORDER BY canonical_path`).all(caseId);
+            return send(res, 200, { items: rows.map((item) => ({ canonicalPath: item.canonical_path, sourceFile: item.source_file,
+              sourceRow: item.source_row, sourceColumn: item.source_column, original: safeJson(item.original_json),
+              transformed: safeJson(item.transformed_json), rule: safeJson(item.rule_json) })) });
+          }
+
           const officialRunMatch = pathname.match(/^\/admin\/cases\/([^/]+)\/official-run$/);
           if (officialRunMatch && method === "POST") {
             if (!requireAdmin(user, res)) return;
             const caseId = decodeURIComponent(officialRunMatch[1]);
             const selectedCase = caseAccessRow(db, user, caseId);
             if (!selectedCase) return send(res, 404, { error: "Case not found." });
+            if (selectedCase.dataset_status !== "Approved") return send(res, 409, { error: "The processed dataset version must be approved before an Official Run can be generated." });
             try { return send(res, 202, { run: runDto(createRun(selectedCase, user.id, { official: true })) }); }
             catch (error) { return send(res, 422, { error: error.message }); }
           }
@@ -489,6 +584,7 @@ export function localApiPlugin(root, modelConfig = {}) {
             if (!requireAdmin(user, res)) return;
             const selectedCase = caseAccessRow(db, user, caseId);
             if (!selectedCase) return send(res, 404, { error: "Case not found or not available to this account." });
+            if (selectedCase.dataset_status !== "Approved") return send(res, 409, { error: "The processed dataset version must be approved before an Official Run can be generated." });
             try {
               return send(res, 202, runDto(createRun(selectedCase, user.id, { official: true })));
             } catch (error) {
@@ -660,7 +756,7 @@ export function localApiPlugin(root, modelConfig = {}) {
 
           next();
         } catch (error) {
-          const status = /UNIQUE constraint failed/.test(error.message) ? 409 : 500;
+          const status = Number(error.status) || (/UNIQUE constraint failed/.test(error.message) ? 409 : 500);
           send(res, status, { error: status === 409 ? "A record with the same unique identifier already exists." : error.message });
         }
       });

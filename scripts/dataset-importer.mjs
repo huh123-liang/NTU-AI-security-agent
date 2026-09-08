@@ -51,11 +51,11 @@ function validateLongitudinalPatient(patient, expectedId = null, strictTenVisits
   const dates = Array.isArray(patient?.visits) ? patient.visits.map((visit) => Date.parse(visit?.date || "")) : [];
   if (dates.some((date) => !Number.isFinite(date))) errors.push("One or more visit dates are invalid.");
   if (dates.some((date, index) => index > 0 && date < dates[index - 1])) errors.push("Visit dates are not chronological.");
-  if (patient?.synthetic !== true) warnings.push("The record is not explicitly marked synthetic.");
+  if (patient?.synthetic !== true && patient?.synthetic !== false) warnings.push("The record does not declare whether it is synthetic or de-identified real-world data.");
   return { patientId, errors, warnings };
 }
 
-function persistPatient(db, datasetId, patient, sourceEntry, sourceBytes, strictTenVisits, expectedId, writeIssue) {
+function persistPatient(db, datasetId, patient, sourceEntry, sourceBytes, strictTenVisits, expectedId, writeIssue, datasetVersionId = null) {
   const quality = validateLongitudinalPatient(patient, expectedId, strictTenVisits);
   quality.warnings.forEach((message) => writeIssue(quality.patientId || expectedId, "medium", "PATIENT_WARNING", message));
   if (quality.errors.length) {
@@ -66,14 +66,15 @@ function persistPatient(db, datasetId, patient, sourceEntry, sourceBytes, strict
   const referenceVisit = visits[visits.length - 1];
   const conditions = Array.isArray(patient.conditions) ? patient.conditions : [];
   const conditionSummary = conditions.map((condition) => condition.display || condition.key || condition.condition).filter(Boolean).join(" · ") || patient.condition || "Chronic-care review";
-  db.prepare(`INSERT INTO cases (id, dataset_id, patient_id, age, sex, ethnicity, condition_summary, conditions_json,
+  const caseId = id("CASE");
+  db.prepare(`INSERT INTO cases (id, dataset_id, dataset_version_id, patient_id, age, sex, ethnicity, condition_summary, conditions_json,
     visit_count, clinical_json, reference_visit_json, source_entry, source_sha256, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id("CASE"), datasetId, quality.patientId, Number(patient.age_at_visit_1 ?? patient.age ?? null),
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(caseId, datasetId, datasetVersionId, quality.patientId, Number(patient.age_at_visit_1 ?? patient.age ?? null),
       String(patient.sex || "unspecified"), String(patient.ethnicity || "unspecified"), conditionSummary,
       JSON.stringify(conditions), visits.length, JSON.stringify(patient), JSON.stringify(referenceVisit || {}),
       sourceEntry, sha256(Buffer.from(sourceBytes)), now());
-  return true;
+  return caseId;
 }
 
 function createDataset(db, payload, sourcePath, sourceHash) {
@@ -126,7 +127,7 @@ function importSyntheaZip(db, datasetId, buffer) {
   const provenance = {
     ...summary,
     readmeExcerpt: readmeKey ? text(archive[readmeKey]).slice(0, 1200) : "",
-    importedFormat: "synthea-sg-zip",
+    importedFormat: summary.imported_format || "longitudinal-patient-zip",
   };
   return { declared: manifest.length, valid, quarantined, schemaVersion: String(summary.schema_version || "unknown"), provenance };
 }
@@ -211,6 +212,74 @@ export function importDatasetBuffer({ db, root, ownerId, fileName, buffer, name,
     issueWriter(db, datasetId)(null, "critical", "IMPORT_FAILED", error.message);
     throw error;
   }
+}
+
+export function importProcessedDirectory({ db, ownerId, name, description = "", sourceFileName, sourcePath, sourceHash,
+  processedPath, ingestionJobId, mapping = {}, rules = {}, quality = {} }) {
+  const manifestPath = path.join(processedPath, "manifest.csv");
+  if (!existsSync(manifestPath)) throw new Error("Processed output does not contain manifest.csv.");
+  const manifest = parseCsv(readFileSync(manifestPath, "utf8"));
+  const datasetId = id("DATA");
+  const versionId = id("VER");
+  const timestamp = now();
+  const writeIssue = issueWriter(db, datasetId);
+  let valid = 0;
+  let quarantined = 0;
+  withTransaction(db, () => {
+    db.prepare(`INSERT INTO datasets (id, owner_id, name, description, source_filename, source_format, source_path,
+      source_sha256, status, visibility, declared_count, valid_count, quarantined_count, schema_version, provenance_json, created_at)
+      VALUES (?, ?, ?, ?, ?, 'ZIP', ?, ?, 'Pending Review', 'private', ?, 0, 0, ?, ?, ?)`)
+      .run(datasetId, ownerId, name, description, sourceFileName, sourcePath, sourceHash, Number(quality.patientsDiscovered || manifest.length),
+        "hospital-csv-pipeline-v1", JSON.stringify({ importedFormat: "hospital-csv-zip", ingestionJobId }), timestamp);
+    db.prepare(`INSERT INTO dataset_versions (id, dataset_id, ingestion_job_id, version_number, status, source_sha256,
+      mapping_json, rules_json, quality_json, processed_path, created_by, created_at)
+      VALUES (?, ?, ?, 1, 'Pending Review', ?, ?, ?, ?, ?, ?, ?)`)
+      .run(versionId, datasetId, ingestionJobId, sourceHash, JSON.stringify(mapping), JSON.stringify(rules),
+        JSON.stringify(quality), processedPath, ownerId, timestamp);
+    for (const item of manifest) {
+      const expectedId = String(item.patient_id || item.patientId || item.id || "").trim();
+      const relative = normaliseEntry(item.file || `patients/${expectedId}.json`);
+      const patientPath = path.resolve(processedPath, relative);
+      const safeRoot = `${path.resolve(processedPath)}${path.sep}`;
+      if (!patientPath.startsWith(safeRoot) || !existsSync(patientPath)) {
+        quarantined += 1;
+        writeIssue(expectedId, "critical", "MISSING_PROCESSED_PATIENT", "Processed manifest entry has no corresponding patient JSON file.", { file: relative });
+        continue;
+      }
+      try {
+        const bytes = readFileSync(patientPath);
+        const patient = JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, ""));
+        const caseId = persistPatient(db, datasetId, patient, relative, bytes, true, expectedId, writeIssue, versionId);
+        if (caseId) {
+          valid += 1;
+          const insertLineage = db.prepare(`INSERT INTO record_lineage (id,dataset_version_id,case_id,patient_id,canonical_path,
+            source_file,source_row,source_column,original_json,transformed_json,rule_json,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
+          patient.visits.forEach((visit, visitIndex) => {
+            for (const [key, measurement] of Object.entries(visit.clinic_measurements || {})) {
+              const sourceKey = measurement?.source_key || {};
+              const transformation = measurement?.transformation || {};
+              insertLineage.run(id("LIN"), versionId, caseId, expectedId,
+                `visits[${visitIndex}].clinic_measurements.${key}`, String(measurement?.source_table || relative),
+                Number(sourceKey.row || 0) || null, String(sourceKey.column || ""),
+                JSON.stringify({ value: transformation.originalValue ?? measurement?.value, unit: transformation.originalUnit ?? measurement?.unit }),
+                JSON.stringify({ value: measurement?.value, unit: measurement?.unit, observed: measurement?.observed !== false, imputed: measurement?.imputed === true }),
+                JSON.stringify({ converted: transformation.converted === true, formula: transformation.formula || null, imputationMethod: measurement?.imputation_method || null }), now());
+            }
+          });
+        } else quarantined += 1;
+      } catch (error) {
+        quarantined += 1;
+        writeIssue(expectedId, "high", "INVALID_PROCESSED_PATIENT", "Processed patient record could not be imported.", { error: error.message, file: relative });
+      }
+    }
+    for (const issue of Array.isArray(quality.issues) ? quality.issues.slice(0, 5000) : []) {
+      writeIssue(issue.patientIdHash || null, issue.severity || "medium", issue.code || "PROCESSING_ISSUE", issue.message || "Preprocessing issue", issue);
+    }
+    db.prepare("UPDATE datasets SET valid_count = ?, quarantined_count = ? WHERE id = ?").run(valid, quarantined + Number(quality.quarantinedCases || 0), datasetId);
+  });
+  audit(db, ownerId, "dataset.preprocessed", "dataset", datasetId, { ingestionJobId, versionId, valid, quarantined });
+  return { datasetId, versionId, declared: manifest.length, valid, quarantined: quarantined + Number(quality.quarantinedCases || 0) };
 }
 
 export function ensureBundledDataset({ db, root }) {
