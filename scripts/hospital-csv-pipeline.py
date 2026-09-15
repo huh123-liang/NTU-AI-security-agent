@@ -23,6 +23,8 @@ CANONICAL_FIELDS = [
     "ignore", "patient_id", "encounter_id", "visit_date", "age", "sex", "ethnicity",
     "diagnosis_code", "diagnosis_display", "observation_name", "observation_value", "observation_unit",
     "systolic_bp", "diastolic_bp", "hba1c", "egfr", "ldl", "weight", "height", "bmi",
+    "medication_name", "medication_dose", "medication_route", "medication_frequency",
+    "procedure_code", "procedure_display", "allergy_substance", "allergy_reaction", "clinical_note",
 ]
 
 FIELD_ALIASES = {
@@ -45,6 +47,15 @@ FIELD_ALIASES = {
     "weight": ("weight", "bodyweight", "body_weight"),
     "height": ("height", "bodyheight", "body_height"),
     "bmi": ("bmi", "bodymassindex", "body_mass_index"),
+    "medication_name": ("medication", "medicationname", "medication_name", "drug", "drugname", "drug_name"),
+    "medication_dose": ("dose", "dosage", "medicationdose", "medication_dose"),
+    "medication_route": ("route", "medicationroute", "medication_route"),
+    "medication_frequency": ("frequency", "freq", "medicationfrequency", "medication_frequency"),
+    "procedure_code": ("procedurecode", "procedure_code", "procedureid", "procedure_id", "cptcode", "cpt_code"),
+    "procedure_display": ("procedure", "procedurename", "procedure_name", "proceduredisplay", "procedure_display"),
+    "allergy_substance": ("allergy", "allergen", "allergysubstance", "allergy_substance"),
+    "allergy_reaction": ("reaction", "allergyreaction", "allergy_reaction"),
+    "clinical_note": ("note", "notes", "clinicalnote", "clinical_note", "note_text", "text"),
 }
 
 DISPLAY = {
@@ -130,6 +141,14 @@ def infer_role(field_map: dict[str, str]):
         return "dictionary"
     if "diagnosis_code" in values and ("patient_id" in values or "encounter_id" in values):
         return "diagnosis"
+    if values.intersection({"medication_name", "medication_dose", "medication_route", "medication_frequency"}):
+        return "medication"
+    if values.intersection({"procedure_code", "procedure_display"}):
+        return "procedure"
+    if values.intersection({"allergy_substance", "allergy_reaction"}):
+        return "allergy"
+    if "clinical_note" in values:
+        return "note"
     if "observation_name" in values or "observation_value" in values or values.intersection(DISPLAY):
         return "observation"
     if "encounter_id" in values and "visit_date" in values:
@@ -225,6 +244,18 @@ def chronic_condition(code: str, display: str):
     return next(((key, label) for key, label, matched in groups if matched), None)
 
 
+def general_condition(code: str, display: str):
+    classified = chronic_condition(code, display)
+    if classified:
+        return classified
+    clean_code = re.sub(r"[^a-z0-9]+", "_", str(code or "").strip().lower()).strip("_")
+    clean_display = str(display or "").strip()
+    if not clean_code and not clean_display:
+        return None
+    key = clean_code or re.sub(r"[^a-z0-9]+", "_", clean_display.lower()).strip("_") or "unspecified_diagnosis"
+    return key[:80], (clean_display or str(code or "Unspecified diagnosis").strip())[:240]
+
+
 def mapped(row: dict, fields: dict):
     result = {}
     for source, canonical in fields.items():
@@ -283,9 +314,11 @@ def setup_staging(path: Path):
       CREATE TABLE encounters(encounter_id TEXT PRIMARY KEY, pid TEXT, visit_date TEXT);
       CREATE TABLE code_dictionary(code TEXT PRIMARY KEY, display TEXT);
       CREATE TABLE conditions(pid TEXT, code TEXT, display TEXT, source_file TEXT, source_row INTEGER);
-      CREATE TABLE events(pid TEXT, visit_date TEXT, kind TEXT, value REAL, unit TEXT, source_file TEXT, source_row INTEGER, source_column TEXT, transform_json TEXT);
+      CREATE TABLE events(pid TEXT, visit_date TEXT, kind TEXT, display TEXT, value REAL, unit TEXT, source_file TEXT, source_row INTEGER, source_column TEXT, transform_json TEXT);
+      CREATE TABLE clinical_items(pid TEXT, visit_date TEXT, category TEXT, code TEXT, display TEXT, value TEXT, unit TEXT, restricted INTEGER DEFAULT 0, source_file TEXT, source_row INTEGER, source_column TEXT);
       CREATE INDEX idx_events_patient_date ON events(pid, visit_date);
       CREATE INDEX idx_conditions_patient ON conditions(pid);
+      CREATE INDEX idx_clinical_items_patient_date ON clinical_items(pid, visit_date);
       CREATE INDEX idx_encounters_patient ON encounters(pid);
     """)
     return db
@@ -299,7 +332,7 @@ def process_archive(source: Path, mapping_path: Path, output_dir: Path):
         shutil.rmtree(patient_dir)
     patient_dir.mkdir(parents=True)
     staging = setup_staging(output_dir / "staging.db")
-    tables = sorted(mapping.get("tables", []), key=lambda item: {"dictionary": 0, "patient": 1, "encounter": 2, "diagnosis": 3, "observation": 4, "mixed": 5}.get(item.get("role"), 9))
+    tables = sorted(mapping.get("tables", []), key=lambda item: {"dictionary": 0, "patient": 1, "encounter": 2, "diagnosis": 3, "observation": 4, "medication": 5, "procedure": 6, "allergy": 7, "note": 8, "mixed": 9}.get(item.get("role"), 10))
     counters = Counter()
     source_hash = file_sha256(source)
     with zipfile.ZipFile(source) as archive:
@@ -340,11 +373,22 @@ def process_archive(source: Path, mapping_path: Path, output_dir: Path):
                         display = found[0] if found else ""
                     if pid and code:
                         staging.execute("INSERT INTO conditions VALUES (?,?,?,?,?)", (pid, code, display, entry, row_number))
-                    if not pid or not visit:
+                    if not pid:
                         continue
+                    visit_key = visit.isoformat() if visit else "UNDATED"
+                    item_specs = [
+                        ("medication", "", data.get("medication_name"), " | ".join(filter(None, [data.get("medication_dose"), data.get("medication_route"), data.get("medication_frequency")])), "", 0, data.get("__source_medication_name")),
+                        ("procedure", data.get("procedure_code"), data.get("procedure_display"), "", "", 0, data.get("__source_procedure_display") or data.get("__source_procedure_code")),
+                        ("allergy", "", data.get("allergy_substance"), data.get("allergy_reaction"), "", 0, data.get("__source_allergy_substance")),
+                        ("clinical_note", "", "Clinical note", data.get("clinical_note"), "", 1, data.get("__source_clinical_note")),
+                    ]
+                    for category, item_code, item_display, item_value, item_unit, restricted, source_column in item_specs:
+                        if item_display or item_value:
+                            staging.execute("INSERT INTO clinical_items VALUES (?,?,?,?,?,?,?,?,?,?,?)", (pid, visit_key, category, item_code or "", item_display or "", item_value or "", item_unit or "", restricted, entry, row_number, source_column or ""))
                     metric_candidates = []
                     if data.get("observation_name") and data.get("observation_value"):
                         metric_candidates.extend(observation_metrics(data["observation_name"], data["observation_value"], data.get("observation_unit", "")))
+                        staging.execute("INSERT INTO clinical_items VALUES (?,?,?,?,?,?,?,?,?,?,?)", (pid, visit_key, "observation", "", data["observation_name"], data["observation_value"], data.get("observation_unit", ""), 0, entry, row_number, data.get("__source_observation_value", "")))
                     for kind in DISPLAY:
                         if data.get(kind):
                             metric_candidates.append((kind, data[kind], data.get("observation_unit", "")))
@@ -355,7 +399,7 @@ def process_archive(source: Path, mapping_path: Path, output_dir: Path):
                             continue
                         number, unit, transform = normalized
                         source_column = data.get(f"__source_{kind}") or data.get("__source_observation_value") or ""
-                        staging.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)", (pid, visit.isoformat(), kind, number, unit, entry, row_number, source_column, json.dumps(transform)))
+                        staging.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?)", (pid, visit_key, kind, DISPLAY[kind], number, unit, entry, row_number, source_column, json.dumps(transform)))
                         counters["validMeasurements"] += 1
                     if row_number % 100000 == 0:
                         staging.commit()
@@ -371,53 +415,64 @@ def process_archive(source: Path, mapping_path: Path, output_dir: Path):
         raw_conditions = staging.execute("SELECT code,display,source_file,source_row FROM conditions WHERE pid=?", (pid,)).fetchall()
         conditions = {}
         for code, display, source_file, source_row in raw_conditions:
-            classified = chronic_condition(code, display)
+            classified = general_condition(code, display)
             if classified:
                 key, label = classified
                 conditions.setdefault(key, {"key": key, "display": label, "source": {"table": source_file, "row": source_row, "code": code, "description": display}})
-        dates = [row[0] for row in staging.execute("SELECT DISTINCT visit_date FROM events WHERE pid=? ORDER BY visit_date", (pid,)).fetchall()]
-        if not conditions:
-            issues.append({"patientIdHash": hashlib.sha256(pid.encode()).hexdigest(), "severity": "high", "code": "NO_TARGET_CHRONIC_DIAGNOSIS", "message": "No supported chronic diagnosis was identified."})
+        event_dates = [row[0] for row in staging.execute("SELECT DISTINCT visit_date FROM events WHERE pid=?", (pid,)).fetchall()]
+        item_dates = [row[0] for row in staging.execute("SELECT DISTINCT visit_date FROM clinical_items WHERE pid=?", (pid,)).fetchall()]
+        dates = sorted(set(event_dates + item_dates), key=lambda value: (value == "UNDATED", value))
+        if not dates and conditions:
+            dates = ["UNDATED"]
+        if not dates and not conditions:
+            issues.append({"patientIdHash": hashlib.sha256(pid.encode()).hexdigest(), "severity": "high", "code": "NO_MEANINGFUL_CLINICAL_CONTENT", "message": "No diagnosis, observation, medication, procedure, allergy, or clinical note could be linked to this patient."})
             continue
-        if len(dates) < 10:
-            issues.append({"patientIdHash": hashlib.sha256(pid.encode()).hexdigest(), "severity": "high", "code": "INSUFFICIENT_VALID_VISITS", "message": f"Only {len(dates)} visits contain valid clinical information; 10 are required."})
-            continue
-        selected_dates = dates[-10:]
+        dated = [day for day in dates if day != "UNDATED"]
+        selected_dates = (dated[-10:] if dated else ["UNDATED"])
         pseudonym = "HOSP-" + hashlib.sha256((source_hash + "|" + pid).encode()).hexdigest()[:12].upper()
         visits = []
         last_seen = {}
         for visit_index, day in enumerate(selected_dates, 1):
-            rows = staging.execute("SELECT kind,value,unit,source_file,source_row,source_column,transform_json FROM events WHERE pid=? AND visit_date=?", (pid, day)).fetchall()
+            rows = staging.execute("SELECT kind,display,value,unit,source_file,source_row,source_column,transform_json FROM events WHERE pid=? AND visit_date=?", (pid, day)).fetchall()
             measurements = {}
-            for kind, value, unit, source_file, source_row, source_column, transform_json in rows:
+            for kind, metric_display, value, unit, source_file, source_row, source_column, transform_json in rows:
                 source_key = {"row": source_row, "column": source_column, "patientKeySha256": hashlib.sha256(pid.encode()).hexdigest()}
-                measurements[kind] = {"display": DISPLAY[kind], "value": value, "unit": unit, "observed": True, "source_table": source_file, "source_key": source_key, "transformation": json.loads(transform_json)}
+                measurements[kind] = {"display": metric_display or DISPLAY.get(kind, kind), "value": value, "unit": unit, "observed": True, "source_table": source_file, "source_key": source_key, "transformation": json.loads(transform_json)}
                 if kind in {"weight", "height", "bmi"}:
                     last_seen[kind] = (parse_date(day), measurements[kind])
             current_day = parse_date(day)
             for kind, maximum_days in (("weight", 365), ("bmi", 365), ("height", 1825)):
-                if kind not in measurements and kind in last_seen:
+                if current_day and kind not in measurements and kind in last_seen:
                     observed_day, original = last_seen[kind]
                     if (current_day - observed_day).days <= maximum_days:
                         copy = json.loads(json.dumps(original))
                         copy.update({"observed": False, "imputed": True, "imputation_method": "last_observation_carried_forward", "imputation_source_date": observed_day.isoformat(), "imputation_note": "Display support only; not a newly observed clinical value."})
                         measurements[kind] = copy
                         counters["imputedFields"] += 1
+            public_items = staging.execute("SELECT category,code,display,value,unit,source_file,source_row,source_column FROM clinical_items WHERE pid=? AND visit_date=? AND restricted=0", (pid, day)).fetchall()
+            clinical_items = [{"category": category, "code": code, "display": item_display, "value": value, "unit": unit,
+                               "source": {"table": source_file, "row": source_row, "column": source_column}}
+                              for category, code, item_display, value, unit, source_file, source_row, source_column in public_items]
+            restricted_count = staging.execute("SELECT COUNT(*) FROM clinical_items WHERE pid=? AND visit_date=? AND restricted=1", (pid, day)).fetchone()[0]
+            total_visits = len(selected_dates)
+            task_type = "undated_snapshot" if day == "UNDATED" and total_visits == 1 else ("single_visit" if total_visits == 1 else ("short_longitudinal" if total_visits < 10 else "standard_longitudinal"))
+            is_reference = total_visits > 1 and visit_index == total_visits
             visits.append({
-                "visit_number": visit_index, "date": day, "status": "completed",
+                "visit_number": visit_index, "date": None if day == "UNDATED" else day, "status": "completed",
                 "source_event_type": "normalized hospital record", "clinic_measurements": measurements,
-                "consultation": {"reason_for_consultation": {"type": "longitudinal chronic-care review"},
+                "clinical_items": clinical_items, "restricted_note_count": restricted_count,
+                "consultation": {"reason_for_consultation": {"type": "general clinical review"},
                     "relevant_history": {"smoking": "not available", "drug_allergies": ["not available"], "frailty": "not available", "patient_priority": "not available"},
                     "interval_history": {"medication_adherence_status": "not available", "acute_complaints": "not available"},
                     "assessment_and_plan": [{"status": "source measurement review only"}], "medication_actions": []},
-                "data_availability": {"reference_role": "withheld reference" if visit_index == 10 else "model input"},
+                "data_availability": {"reference_role": "withheld reference" if is_reference else "model input", "task_type": task_type},
             })
         age_number = int(float(age)) if age and numeric(age) is not None else None
         top_coded = age_number is not None and age_number >= 91
         if top_coded:
             age_number = 91
         patient = {
-            "schema_version": "mvp2-longitudinal-patient-v3", "patient_id": pseudonym,
+            "schema_version": "mvp2-general-clinical-patient-v4", "patient_id": pseudonym,
             "synthetic": False, "deidentified": True, "source_dataset": source.name,
             "source_date_note": "Dates are de-identified research dates and must not be interpreted as current calendar dates.",
             "age_at_visit_1": age_number, "age_top_coded": top_coded, "sex": str(sex or "unspecified").lower(),
@@ -427,11 +482,11 @@ def process_archive(source: Path, mapping_path: Path, output_dir: Path):
         }
         file_name = f"{pseudonym}.json"
         (patient_dir / file_name).write_text(json.dumps(patient, indent=2, ensure_ascii=False), encoding="utf-8")
-        manifest_rows.append({"patient_id": pseudonym, "file": f"patients/{file_name}", "visits": 10})
+        manifest_rows.append({"patient_id": pseudonym, "file": f"patients/{file_name}", "visits": len(visits)})
         id_map.append((pid, pseudonym))
         eligible += 1
         if index % 100 == 0:
-            emit("building_cases", 62 + round((index + 1) / max(1, len(patients)) * 30), "Building eligible longitudinal cases", patients=index + 1)
+            emit("building_cases", 62 + round((index + 1) / max(1, len(patients)) * 30), "Building eligible clinical cases", patients=index + 1)
 
     with (output_dir / "manifest.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=["patient_id", "file", "visits"])
@@ -444,7 +499,7 @@ def process_archive(source: Path, mapping_path: Path, output_dir: Path):
         "quarantinedCases": len(patients) - eligible, "validMeasurements": counters["validMeasurements"],
         "invalidMeasurements": counters["invalidMeasurements"], "imputedFields": counters["imputedFields"],
         "issues": issues[:5000], "issueCount": len(issues),
-        "rules": {"minimumVisits": 10, "modelInputVisits": "1-9", "withheldReferenceVisit": 10,
+        "rules": {"minimumVisits": 1, "taskRouting": "adaptive", "withheldReferenceVisit": "latest only when multiple records exist",
                   "criticalMissingValues": "never imputed", "limitedLocf": {"weightDays": 365, "bmiDays": 365, "heightDays": 1825}},
     }
     (output_dir / "quality.json").write_text(json.dumps(quality, indent=2), encoding="utf-8")

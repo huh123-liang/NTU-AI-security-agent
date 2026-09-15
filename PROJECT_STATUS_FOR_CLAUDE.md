@@ -1,9 +1,11 @@
 # AI Medical Agent Evaluation Platform — Project Status Handoff
 
 > Prepared for Claude review  
-> Status date: 30 August 2026  
+> Status date: 15 September 2026
 > Current Git base: `v1.3.0-evidence-resilience` (`32b30f5`); Official-Run study-mode changes are working-tree updates pending the next local release tag.  
 > Project root: `C:\Users\Lenovo\Desktop\NTU\NTU AI security agents\MVP2`
+
+> **Superseding update — 15 September 2026:** Dataset intake is now Admin-only. The hard chronic-disease/10-visit gate has been replaced by adaptive `single_visit`, `short_longitudinal`, `standard_longitudinal`, and `undated_snapshot` tasks. A real, versioned Admin Model Registry now supports DeepSeek, Qwen, OpenAI, GLM and other OpenAI-compatible endpoints, with AES-256-GCM-encrypted local credentials, dataset routing, blinded Doctor labels, and separate case/task/model/output evaluation batches. Statements below that say Doctors upload data, only DeepSeek is implemented, or the task is always visits 1–9 to visit 10 are historical and no longer current.
 
 ## 1. What this project is for
 
@@ -13,12 +15,12 @@ The longer-term vision is a governed evaluation and certification platform for A
 
 Current research task:
 
-1. Select a simulated longitudinal chronic-disease patient.
-2. Send visits 1–9 to the configured medical LLM.
-3. Ask the LLM to generate a proposed plan for visit 10.
-4. Withhold the actual simulated visit-10 record as reference evidence.
-5. Let multiple doctors independently score one pre-generated, fixed Official Run.
-6. Let an administrator inspect, aggregate and lock the final result.
+1. Admin imports, maps, preprocesses, reviews and approves a clinical dataset.
+2. Admin assigns an active versioned model configuration to the dataset.
+3. The backend routes each case as `single_visit`, `short_longitudinal`, `standard_longitudinal` or `undated_snapshot` and builds an auditable evidence snapshot.
+4. Admin pre-generates a fixed Official Run for a case/model/task batch; longitudinal tasks reserve the latest eligible record as reference evidence, while single-record tasks use the supplied record without withholding.
+5. Multiple Doctors independently score the same blinded Official Run.
+6. Admin inspects, aggregates and locks the final result.
 
 All current patient data are synthetic Synthea-SG research data. No real patient EHR or PHI is included.
 
@@ -87,8 +89,8 @@ Live local database snapshot on 24 August 2026:
 
 ### 4.3 Dataset governance and missing-data handling
 
-- [x] Doctor upload support for ZIP, JSON and CSV.
-- [x] Doctor uploads are private by default and visible only to the uploader and Admin.
+- [x] Admin-only upload support for ZIP containing CSV/CSV.GZ, plus supported JSON and CSV forms.
+- [x] Legacy Doctor-owned datasets are migrated to Admin ownership while preserving original-uploader provenance and an audit event.
 - [x] Admin can reject, approve privately, or approve and share a dataset.
 - [x] Original filename, format, source path, SHA-256, owner, timestamps and quality issues are recorded.
 - [x] Supplied 500-patient archive was profiled rather than assumed complete.
@@ -99,10 +101,12 @@ Live local database snapshot on 24 August 2026:
 
 ### 4.4 Model generation workflow
 
-- [x] Replaceable provider architecture in `worker/model-adapter.js`.
-- [x] DeepSeek is the currently installed provider; the React frontend does not call it directly.
-- [x] Visits 1–9 are saved as a versioned model-input snapshot.
-- [x] Visit 10 is withheld and stored separately as reference evidence.
+- [x] Replaceable OpenAI-compatible Chat Completions provider architecture in `worker/model-adapter.js`.
+- [x] Admin Model Registry presets for DeepSeek, Qwen, OpenAI and GLM, plus custom OpenAI-compatible endpoints; the React frontend never calls a provider directly.
+- [x] Model configurations are versioned, tagged, enabled/disabled and stored with AES-256-GCM-encrypted API credentials; plaintext keys are not returned by the Admin API.
+- [x] Dataset-to-model routing is suggested from tags and requires Admin confirmation.
+- [x] Adaptive, versioned model-input snapshots support one record, short histories, standard histories and undated snapshots.
+- [x] For histories with at least two records, the latest selected record is withheld as reference evidence; single-record and undated tasks do not fabricate or withhold a reference.
 - [x] Historical runs remain auditable; the active Doctor workflow exposes only one Admin-created Official Run per case.
 - [x] Persisted asynchronous lifecycle: Preparing data, Calling model, Processing response, Validating evidence and Saved.
 - [x] Cancel, retry, browser-refresh recovery and process-restart interruption handling.
@@ -113,10 +117,10 @@ Live local database snapshot on 24 August 2026:
 ### 4.5 Longitudinal data and evidence traceability
 
 - [x] Patient summary and active-condition display.
-- [x] Ten-visit clinical timeline.
+- [x] Adaptive clinical timeline for one or more available records.
 - [x] Longitudinal metric trend chart.
 - [x] Doctor-facing clinical-record evidence view with original source path and SHA-256 provenance; raw JSON is retained for Admin/development audit.
-- [x] Backend evidence catalogue limited to source measurements from visits 1–9.
+- [x] Backend evidence catalogue limited to source measurements in the exact persisted model-input snapshot.
 - [x] Model citation tokens are checked against backend-allowed evidence IDs.
 - [x] Valid citations are interactive and link the model claim to the corresponding visit, metric, chart point and JSON path.
 - [x] Canonical and legacy evidence-record formats remain readable.
@@ -154,14 +158,14 @@ Live local database snapshot on 24 August 2026:
 - [x] Runtime instance identity using instance ID, PID, project path and port.
 - [x] Stale processes and unrelated services are not reused or stopped.
 - [x] Automatic fallback from port 4190 to 4191–4199.
-- [x] DeepSeek network health diagnostics and actionable error messages.
+- [x] Registry-level model-credential health status and provider-neutral actionable error messages.
 - [x] Existing failed model runs remain visible as an audit trail.
 
 ### 4.9 Verification completed
 
-- [x] `npm test`: **11/11 tests passed** on 24 August 2026.
-- [x] `npm run build`: completed successfully on 24 August 2026.
-- [x] Automated coverage includes password hashing, Visit 1–9 evidence restrictions, legacy evidence decoding, transient model retry, SQL lifecycle columns, 369/131 data-quality handling, three-Doctor weighted aggregation, immutable locking, static routing and Sites packaging.
+- [x] `npm test`: **17 passed, 0 failed, 1 optional-data test skipped** on 15 September 2026.
+- [x] `npm run build`: completed successfully on 15 September 2026.
+- [x] Automated coverage includes password hashing, adaptive task routing, exact-snapshot evidence restrictions, legacy evidence decoding, transient model retry, encrypted Model Registry credentials, SQL lifecycle columns, Admin-only resumable ingestion, three-Doctor weighted aggregation, immutable locking, static routing and Sites packaging.
 - [x] A real DeepSeek run has successfully generated a visit-10 plan from visits 1–9.
 - [x] A three-Doctor weighted result of 4.33/5 has been finalized and locked in the local demonstration database.
 - [x] Git history is preserved through tag `v1.3.0-evidence-resilience` and a verified standalone Git bundle.
@@ -182,11 +186,11 @@ Live local database snapshot on 24 August 2026:
 
 ## 5. Partially implemented or important limitations
 
-- [~] **Evidence verification is structural, not semantic.** The backend confirms that a cited evidence ID exists in visits 1–9, but it does not yet prove that the cited value logically supports the surrounding clinical claim. A diagnosis could still be paired with an existing but irrelevant measurement token.
+- [~] **Evidence verification is structural, not semantic.** The backend confirms that a cited evidence ID exists in the exact model-input snapshot, but it does not yet prove that the cited value logically supports the surrounding clinical claim. A diagnosis could still be paired with an existing but irrelevant measurement token.
 - [~] **The equal-weight Official Run preset is implemented.** A governed UI for configuring and versioning non-equal Doctor/rubric weight presets before the first score remains a next enhancement.
 - [~] **Longitudinal visualisation now uses four small multiples and a compact visit strip**, but does not yet provide clinical-range overlays, event overlays or scalable visual summaries for very long histories.
-- [~] **Only DeepSeek is currently installed.** The adapter boundary supports more providers, but OpenAI, local models and other medical models have not been implemented or compared.
-- [~] **The model task is fixed to visits 1–9 → proposed visit 10.** General clinical questions, other prediction horizons and configurable tasks are not yet supported.
+- [~] **Multiple provider protocols are implemented but not clinically benchmarked.** DeepSeek, Qwen, OpenAI, GLM and custom OpenAI-compatible endpoints can be registered; this is API compatibility, not evidence that their clinical quality is equivalent.
+- [~] **Adaptive record-window tasks are implemented**, but Admin-authored study task templates, arbitrary prediction horizons and task-specific rubric versions remain future work.
 - [~] **Dataset formats are prototype-oriented.** ZIP/JSON/CSV import exists, but FHIR R4 resources and live EHR connections are not implemented.
 - [~] **Current tests are core/integration tests, not a full validation programme.** Comprehensive browser E2E, accessibility, load, concurrency, security and clinical-quality tests remain outstanding.
 - [~] **The current NTU branding is a text-based prototype treatment.** An authorised official logo asset and formal brand approval are still needed.

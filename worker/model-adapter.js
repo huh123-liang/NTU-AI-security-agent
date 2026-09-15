@@ -1,6 +1,12 @@
 export const DEFAULT_PROVIDER = "deepseek";
-export const DEFAULT_MODEL = "deepseek-v4-pro";
-export const PROMPT_VERSION = "longitudinal-visit10-evidence-v2";
+export const DEFAULT_MODEL = "deepseek-chat";
+export const PROMPT_VERSION = "adaptive-clinical-evidence-v1";
+export const TASK_PROMPT_VERSIONS = Object.freeze({
+  single_visit: "single-visit-evidence-v1",
+  short_longitudinal: "short-longitudinal-evidence-v1",
+  standard_longitudinal: "standard-longitudinal-evidence-v3",
+  undated_snapshot: "undated-snapshot-evidence-v1",
+});
 
 const METRIC_LABELS = {
   hba1c: "HbA1c",
@@ -21,7 +27,6 @@ export function buildEvidenceCatalog(clinicalData) {
   const visits = Array.isArray(clinicalData?.visits) ? clinicalData.visits : [];
   return visits.flatMap((visit, visitIndex) => {
     const visitNumber = Number(visit.visit_number || visitIndex + 1);
-    if (visitNumber > 9) return [];
     return Object.entries(visit.clinic_measurements || {}).flatMap(([key, raw]) => {
       const value = raw && typeof raw === "object" ? raw.value : raw;
       if (value === null || value === undefined || value === "") return [];
@@ -49,19 +54,26 @@ export function validateEvidenceCitations(output, catalog) {
   return { evidenceLinks, invalidCitations };
 }
 
-function buildClinicalPrompt(clinicalData, evidenceCatalog) {
+export function buildClinicalPrompt(clinicalData, evidenceCatalog, taskType = "standard_longitudinal", customTemplate = "") {
   const recordLabel = clinicalData?.synthetic === false
     ? "de-identified real-world longitudinal research record"
     : "simulated longitudinal research record";
-  return `You are generating a candidate chronic-care plan for research evaluation by qualified clinicians.
+  const taskInstructions = {
+    single_visit: "Use the single supplied clinical record to produce a conservative assessment and next-step plan. No future reference record is being withheld.",
+    short_longitudinal: "Use the supplied prior records to produce the proposed plan for the next visit. The latest record is withheld as reference evidence and must not be claimed as observed.",
+    standard_longitudinal: "Use the supplied longitudinal records to produce the proposed plan for the next visit. The latest record is withheld as reference evidence and must not be claimed as observed.",
+    undated_snapshot: "Use the supplied undated clinical snapshot to produce a conservative assessment and next-step plan. Do not invent chronology or trends.",
+  };
+  const sourceLabel = taskType === "single_visit" || taskType === "undated_snapshot" ? "SUPPLIED CLINICAL RECORD" : "MODEL-INPUT RECORDS ONLY";
+  return `You are generating a candidate clinical plan for research evaluation by qualified clinicians.
 
 TASK
-Use only visits 1-9 in the supplied ${recordLabel}. Generate the proposed plan for visit 10. The actual visit-10 record is withheld and must not be inferred or claimed as observed.
+${taskInstructions[taskType] || taskInstructions.standard_longitudinal}
 
-CASE DATA (VISITS 1-9 ONLY)
+${sourceLabel} (${recordLabel})
 ${JSON.stringify(clinicalData, null, 2)}
 
-ALLOWED SOURCE EVIDENCE IDS (VISITS 1-9 ONLY)
+ALLOWED SOURCE EVIDENCE IDS
 ${evidenceCatalog.map((item) => `${item.id} | Visit ${item.visitNumber} | ${item.date || "date unavailable"} | ${item.metricLabel}: ${item.value} ${item.unit} | ${item.jsonPath}`).join("\n")}
 
 Use these Markdown sections:
@@ -76,13 +88,14 @@ Requirements:
 - Distinguish observed facts from recommendations.
 - Treat fields marked unavailable as unknown. Never convert missingness into a normal finding or invent a medication, laboratory value, symptom, allergy, or history.
 - Treat fields marked imputed as display-support estimates, not observations; state this limitation if they influence a recommendation.
-- Refer to longitudinal trends when relevant.
+- Refer to longitudinal trends only when at least two dated observations support the trend.
 - After every sentence that states a patient measurement or trend, append one or more exact source tokens in the form [EVID:V1-SYSTOLIC-BP]. Use only IDs from the allowed list above.
-- Never cite Visit 10 as evidence. Visit 10 is the future plan target and its actual record is withheld.
+- Never cite or disclose a withheld reference record as model-input evidence.
 - Include contraindication checks, medication monitoring and follow-up timing.
 - Do not invent measurements, diagnoses, allergies or preferences.
 - Do not expose chain-of-thought.
-- End with: Research evaluation output only — not clinical advice.`;
+- End with: Research evaluation output only — not clinical advice.
+${customTemplate ? `\nADMIN-APPROVED MODEL INSTRUCTIONS\n${customTemplate}` : ""}`;
 }
 
 const RETRYABLE_NETWORK_CODES = new Set([
@@ -106,7 +119,8 @@ export function isRetryableModelError(error) {
 }
 
 async function runOpenAICompatible({ provider, clinicalData, evidenceCatalog, apiKey, model, baseUrl, timeoutMs = 90000,
-  maxAttempts = 3, retryDelayMs = 800, extraBody = {}, signal }) {
+  maxAttempts = 3, retryDelayMs = 800, extraBody = {}, temperature = 0.2, maxTokens = 3200,
+  taskType = "standard_longitudinal", promptTemplate = "", signal }) {
   if (!apiKey) throw new Error(`${provider} API key is not configured.`);
   const controller = new AbortController();
   let timedOut = false;
@@ -125,15 +139,11 @@ async function runOpenAICompatible({ provider, clinicalData, evidenceCatalog, ap
             model,
             messages: [
               { role: "system", content: "Produce a conservative, auditable medical-agent candidate response. Never claim to replace clinical judgement." },
-              { role: "user", content: buildClinicalPrompt(clinicalData, evidenceCatalog) },
+              { role: "user", content: buildClinicalPrompt(clinicalData, evidenceCatalog, taskType, promptTemplate) },
             ],
-            max_tokens: 3200,
+            max_tokens: Number(maxTokens || 3200),
+            temperature: Number(temperature ?? 0.2),
             stream: false,
-            // The evaluation needs the final clinician-facing plan, not hidden
-            // reasoning tokens. Disabling thinking also prevents the final content
-            // from being starved by the output-token ceiling.
-            thinking: { type: "disabled" },
-            user_id: "ntu-ai-medical-evaluation-v1",
             ...extraBody,
           }),
           signal: controller.signal,
@@ -153,7 +163,7 @@ async function runOpenAICompatible({ provider, clinicalData, evidenceCatalog, ap
         return {
           provider,
           modelVersion: payload.model || model,
-          promptVersion: PROMPT_VERSION,
+          promptVersion: TASK_PROMPT_VERSIONS[taskType] || PROMPT_VERSION,
           output,
           responseId: payload.id || null,
           usage: payload.usage || null,
@@ -187,21 +197,26 @@ async function runOpenAICompatible({ provider, clinicalData, evidenceCatalog, ap
   }
 }
 
-const providerAdapters = {
-  deepseek: ({ clinicalData, evidenceCatalog, config, signal }) => runOpenAICompatible({
-    provider: "DeepSeek",
+const PROVIDER_LABELS = Object.freeze({ deepseek: "DeepSeek", openai: "OpenAI", qwen: "Qwen", glm: "GLM", "openai-compatible": "OpenAI-compatible" });
+const PROVIDER_BASE_URLS = Object.freeze({ deepseek: "https://api.deepseek.com", openai: "https://api.openai.com/v1", qwen: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", glm: "https://open.bigmodel.cn/api/paas/v4" });
+const providerAdapters = Object.fromEntries(Object.entries(PROVIDER_LABELS).map(([key, label]) => [key,
+  ({ clinicalData, evidenceCatalog, config, signal }) => runOpenAICompatible({
+    provider: label,
     clinicalData,
     evidenceCatalog,
     apiKey: config.apiKey,
     model: config.model || DEFAULT_MODEL,
-    baseUrl: config.baseUrl || "https://api.deepseek.com",
+    baseUrl: config.baseUrl || PROVIDER_BASE_URLS[key] || "",
     timeoutMs: Number(config.timeoutMs || 90000),
     maxAttempts: Number(config.maxAttempts || 3),
     retryDelayMs: Number(config.retryDelayMs || 800),
+    temperature: Number(config.temperature ?? 0.2),
+    maxTokens: Number(config.maxTokens || 3200),
+    taskType: config.taskType || "standard_longitudinal",
+    promptTemplate: config.promptTemplate || "",
     extraBody: config.extraBody || {},
     signal,
-  }),
-};
+  })]));
 
 export function supportedProviders() {
   return Object.keys(providerAdapters);

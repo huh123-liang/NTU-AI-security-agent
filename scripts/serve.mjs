@@ -39,7 +39,7 @@ const env = localEnv();
 const modelConfig = {
   provider: env.MODEL_PROVIDER || env.MEDICAL_MODEL_PROVIDER || "deepseek",
   apiKey: env.MODEL_API_KEY || env.DEEPSEEK_API_KEY,
-  model: env.MODEL_NAME || env.DEEPSEEK_MODEL || "deepseek-v4-pro",
+  model: env.MODEL_NAME || env.DEEPSEEK_MODEL || "deepseek-chat",
   baseUrl: env.MODEL_API_URL || env.DEEPSEEK_API_URL || "https://api.deepseek.com",
   timeoutMs: Number(env.MODEL_TIMEOUT_MS || 90000),
   maxAttempts: Number(env.MODEL_MAX_ATTEMPTS || 3),

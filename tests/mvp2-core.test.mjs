@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -8,7 +8,8 @@ import { previewAggregation, finalizeAggregation } from "../scripts/aggregation.
 import { getDatabase, hashPassword, id, now, resetDatabaseForTests, verifyPassword } from "../scripts/database.mjs";
 import { importDatasetBuffer } from "../scripts/dataset-importer.mjs";
 import { CRITERIA } from "../scripts/domain.mjs";
-import { deserializeEvidenceValidation } from "../scripts/local-api.mjs";
+import { buildTaskPlan, deserializeEvidenceValidation } from "../scripts/local-api.mjs";
+import { createModelConfig, decryptModelSecret, encryptModelSecret, ensureDefaultModelConfig } from "../scripts/model-registry.mjs";
 import { buildEvidenceCatalog, isRetryableModelError, runMedicalModel, validateEvidenceCitations } from "../worker/model-adapter.js";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -29,19 +30,18 @@ test("passwords are salted and verified without storing plaintext", () => {
   assert.equal(verifyPassword("incorrect", first.salt, first.hash), false);
 });
 
-test("evidence catalog accepts only source measurements from visits 1-9", () => {
+test("evidence catalog accepts every measurement in the supplied model-input snapshot", () => {
   const visits = Array.from({ length: 10 }, (_, index) => ({
     visit_number: index + 1,
     date: `2026-${String(index + 1).padStart(2, "0")}-01`,
     clinic_measurements: { hba1c: { value: 8.1 - index * 0.1, unit: "%" } },
   }));
   const catalog = buildEvidenceCatalog({ visits });
-  assert.equal(catalog.length, 9);
-  assert.equal(catalog.at(-1).id, "V9-HBA1C");
-  assert.equal(catalog.some((item) => item.visitNumber === 10), false);
-  const validation = validateEvidenceCitations("Improved [EVID:V1-HBA1C] but future [EVID:V10-HBA1C]", catalog);
-  assert.deepEqual(validation.evidenceLinks.map((item) => item.id), ["V1-HBA1C"]);
-  assert.deepEqual(validation.invalidCitations, ["V10-HBA1C"]);
+  assert.equal(catalog.length, 10);
+  assert.equal(catalog.at(-1).id, "V10-HBA1C");
+  const validation = validateEvidenceCitations("Observed [EVID:V1-HBA1C] and [EVID:V10-HBA1C]", catalog);
+  assert.deepEqual(validation.evidenceLinks.map((item) => item.id), ["V1-HBA1C", "V10-HBA1C"]);
+  assert.deepEqual(validation.invalidCitations, []);
 });
 
 test("evidence catalog excludes values marked as imputed or unobserved", () => {
@@ -105,6 +105,31 @@ test("the model adapter retries transient connection failures but not authentica
   }
 });
 
+test("adaptive task routing supports one, short, standard and undated records", () => {
+  const visit = (number, date) => ({ visit_number: number, date, clinic_measurements: {} });
+  assert.equal(buildTaskPlan({ visits: [visit(1, "2026-01-01")] }).taskType, "single_visit");
+  const short = buildTaskPlan({ visits: [visit(1, "2026-01-01"), visit(2, "2026-02-01")] });
+  assert.equal(short.taskType, "short_longitudinal"); assert.equal(short.modelVisits.length, 1); assert.equal(short.reference.visit_number, 2);
+  const standard = buildTaskPlan({ visits: Array.from({ length: 12 }, (_, index) => visit(index + 1, `2026-${String((index % 12) + 1).padStart(2, "0")}-01`)) });
+  assert.equal(standard.taskType, "standard_longitudinal"); assert.equal(standard.modelVisits.length, 9); assert.equal(standard.reference.visit_number, 12);
+  assert.equal(buildTaskPlan({ visits: [visit(1, null)] }).taskType, "undated_snapshot");
+});
+
+test("model registry encrypts API keys outside source configuration", () => {
+  const root = testRoot();
+  try {
+    const db = getDatabase(root); const admin = db.prepare("SELECT id FROM users WHERE role='admin'").get();
+    const encoded = encryptModelSecret(root, "secret-value");
+    assert.equal(encoded.includes("secret-value"), false);
+    assert.equal(decryptModelSecret(root, encoded), "secret-value");
+    ensureDefaultModelConfig({ db, root, envConfig: {}, adminId: admin.id });
+    const created = createModelConfig({ db, root, actorId: admin.id, input: { displayName: "Qwen clinical", anonymousName: "Model B", provider: "qwen", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", modelId: "qwen-plus", apiKey: "local-test-secret" } });
+    assert.equal(created.apiKeyConfigured, true);
+    const stored = db.prepare("SELECT api_key_encrypted FROM model_configs WHERE id=?").get(created.id).api_key_encrypted;
+    assert.equal(stored.includes("local-test-secret"), false);
+  } finally { resetDatabaseForTests(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("run lifecycle columns are available in the real SQLite schema", () => {
   const root = testRoot();
   try {
@@ -116,12 +141,14 @@ test("run lifecycle columns are available in the real SQLite schema", () => {
   } finally { resetDatabaseForTests(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("the supplied ZIP imports complete cases and quarantines every incomplete manifest entry", () => {
+test("the supplied ZIP imports complete cases and quarantines every incomplete manifest entry", (context) => {
   const root = testRoot();
   try {
+    const source = join(projectRoot, "data-source", "data500_v5_Pat1to500.zip");
+    if (!existsSync(source)) { context.skip("User removed the optional bundled ZIP from this working tree."); return; }
     const db = getDatabase(root);
     const admin = db.prepare("SELECT id FROM users WHERE role = 'admin'").get();
-    const result = importDatasetBuffer({ db, root, ownerId: admin.id, fileName: "data500_v5_Pat1to500.zip", buffer: readFileSync(join(projectRoot, "data-source", "data500_v5_Pat1to500.zip")), name: "QA import", status: "Approved", visibility: "shared" });
+    const result = importDatasetBuffer({ db, root, ownerId: admin.id, fileName: "data500_v5_Pat1to500.zip", buffer: readFileSync(source), name: "QA import", status: "Approved", visibility: "shared" });
     assert.equal(result.declared, 500);
     assert.equal(result.valid, 369);
     assert.equal(result.quarantined, 131);

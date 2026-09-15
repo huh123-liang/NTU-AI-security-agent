@@ -122,6 +122,46 @@ CREATE TABLE IF NOT EXISTS mapping_profiles (
   FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS model_configs (
+  id TEXT PRIMARY KEY,
+  family_id TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  display_name TEXT NOT NULL,
+  anonymous_name TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  protocol TEXT NOT NULL DEFAULT 'openai_chat' CHECK (protocol IN ('openai_chat', 'custom_adapter')),
+  base_url TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  api_key_encrypted TEXT,
+  api_key_hint TEXT,
+  disease_tags_json TEXT NOT NULL DEFAULT '[]',
+  specialty_tags_json TEXT NOT NULL DEFAULT '[]',
+  capability_tags_json TEXT NOT NULL DEFAULT '[]',
+  prompt_template TEXT NOT NULL DEFAULT '',
+  temperature REAL NOT NULL DEFAULT 0.1,
+  max_tokens INTEGER NOT NULL DEFAULT 3200,
+  timeout_ms INTEGER NOT NULL DEFAULT 90000,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+  is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (family_id, version),
+  FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS dataset_model_assignments (
+  dataset_id TEXT PRIMARY KEY,
+  model_config_id TEXT NOT NULL,
+  task_type TEXT,
+  recommendation_json TEXT NOT NULL DEFAULT '{}',
+  assigned_by TEXT NOT NULL,
+  assigned_at TEXT NOT NULL,
+  FOREIGN KEY (dataset_id) REFERENCES datasets(id) ON DELETE CASCADE,
+  FOREIGN KEY (model_config_id) REFERENCES model_configs(id),
+  FOREIGN KEY (assigned_by) REFERENCES users(id)
+);
+
 CREATE TABLE IF NOT EXISTS ingestion_events (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL,
@@ -164,6 +204,7 @@ CREATE TABLE IF NOT EXISTS cases (
   reference_visit_json TEXT NOT NULL,
   source_entry TEXT NOT NULL,
   source_sha256 TEXT NOT NULL,
+  task_type TEXT NOT NULL DEFAULT 'standard_longitudinal',
   created_at TEXT NOT NULL,
   UNIQUE (dataset_id, patient_id),
   FOREIGN KEY (dataset_id) REFERENCES datasets(id) ON DELETE CASCADE
@@ -190,10 +231,34 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   usage_json TEXT NOT NULL DEFAULT '{}',
   input_snapshot_json TEXT NOT NULL,
   error_message TEXT,
+  model_config_id TEXT,
+  task_type TEXT NOT NULL DEFAULT 'standard_longitudinal',
+  anonymous_model_label TEXT NOT NULL DEFAULT 'Model A',
+  evaluation_batch_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT,
   completed_at TEXT,
   FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE CASCADE,
+  FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_batches (
+  id TEXT PRIMARY KEY,
+  dataset_version_id TEXT,
+  case_id TEXT NOT NULL,
+  task_type TEXT NOT NULL,
+  model_config_id TEXT NOT NULL,
+  model_config_version INTEGER NOT NULL,
+  prompt_version TEXT NOT NULL,
+  anonymous_model_label TEXT NOT NULL,
+  run_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'Pending',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (dataset_version_id) REFERENCES dataset_versions(id),
+  FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE CASCADE,
+  FOREIGN KEY (model_config_id) REFERENCES model_configs(id),
+  FOREIGN KEY (run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
   FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
@@ -280,6 +345,8 @@ CREATE INDEX IF NOT EXISTS idx_ingestion_events_job ON ingestion_events(job_id, 
 CREATE INDEX IF NOT EXISTS idx_lineage_version_patient ON record_lineage(dataset_version_id, patient_id);
 CREATE INDEX IF NOT EXISTS idx_cases_dataset ON cases(dataset_id);
 CREATE INDEX IF NOT EXISTS idx_runs_case ON agent_runs(case_id);
+CREATE INDEX IF NOT EXISTS idx_models_status ON model_configs(status, is_default);
+CREATE INDEX IF NOT EXISTS idx_batches_case ON evaluation_batches(case_id, task_type, model_config_id);
 CREATE INDEX IF NOT EXISTS idx_assessments_run ON assessments(run_id);
 CREATE INDEX IF NOT EXISTS idx_assessments_case ON assessments(case_id);
 CREATE INDEX IF NOT EXISTS idx_assessments_reviewer ON assessments(reviewer_id);

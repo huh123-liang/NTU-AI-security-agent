@@ -77,7 +77,7 @@ function Write-ModelConfiguration([string]$ApiKey) {
 # This file is local-only and ignored by Git.
 MODEL_PROVIDER=deepseek
 MODEL_API_URL=https://api.deepseek.com
-MODEL_NAME=deepseek-v4-pro
+MODEL_NAME=deepseek-chat
 MODEL_API_KEY=$ApiKey
 MODEL_TIMEOUT_MS=90000
 MODEL_MAX_ATTEMPTS=3
@@ -149,11 +149,12 @@ if ($DependenciesMissing -or $ForceDependencyInstall) {
   Write-Host "Dependencies are already installed; keeping the existing local copy." -ForegroundColor Green
 }
 
-Write-Step 3 "Configuring DeepSeek / 配置 DeepSeek"
+Write-Step 3 "Configuring the starter model / 配置初始模型"
 $KeyConfigured = Test-KeyConfigured
 $KeepExisting = $KeyConfigured -and (Read-YesNo "A local model key is already configured. Keep it? / 保留现有配置？" $true)
 if (-not $KeepExisting) {
-  Write-Host "Use your own DeepSeek API key. Input is hidden and is saved only in .env.local." -ForegroundColor Yellow
+  Write-Host "You may configure DeepSeek as the starter model. Input is hidden and saved only in .env.local." -ForegroundColor Yellow
+  Write-Host "After launch, Admin > Model registry can add Qwen, OpenAI, GLM or another OpenAI-compatible endpoint."
   Write-Host "Press Enter without a key to run the interface without model generation."
   $ApiKey = if ($NonInteractive) { "" } else { Read-SecretText "DeepSeek API key (hidden)" }
   if ($ApiKey -and -not $ApiKey.StartsWith("sk-")) {
@@ -198,7 +199,7 @@ Write-Host "Local database: created automatically on first launch"
 Write-Host "Bundled dataset: imported automatically on first launch"
 Write-Host "Admin: admin@ntu-demo.local"
 Write-Host "Demo password: 123"
-Write-Host "Future launches: double-click Start-Platform.cmd"
+Write-Host "Future launches: double-click 一键启动-AI医疗评估平台.cmd or the desktop shortcut."
 Write-Host "Do not share .env.local or your API key." -ForegroundColor Yellow
 
 if (-not $NoLaunch) {

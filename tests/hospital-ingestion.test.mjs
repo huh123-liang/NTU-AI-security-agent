@@ -26,7 +26,7 @@ function hospitalFixture() {
   }));
 }
 
-test("hospital CSV pipeline discovers multi-table ZIPs and quarantines ineligible longitudinal records", () => {
+test("hospital CSV pipeline accepts standard and short longitudinal records", () => {
   const root = mkdtempSync(join(tmpdir(), "ntu-hospital-ingestion-"));
   const source = join(root, "hospital.zip");
   const discovery = join(root, "discovery.json");
@@ -44,10 +44,10 @@ test("hospital CSV pipeline discovers multi-table ZIPs and quarantines ineligibl
   assert.equal(processed.status, 0, processed.stderr);
   const quality = JSON.parse(readFileSync(join(output, "quality.json"), "utf8"));
   assert.equal(quality.patientsDiscovered, 2);
-  assert.equal(quality.eligibleCases, 1);
-  assert.equal(quality.quarantinedCases, 1);
+  assert.equal(quality.eligibleCases, 2);
+  assert.equal(quality.quarantinedCases, 0);
   const manifest = readFileSync(join(output, "manifest.csv"), "utf8").trim().split(/\r?\n/);
-  assert.equal(manifest.length, 2);
+  assert.equal(manifest.length, 3);
   const patientFile = manifest[1].split(",")[1];
   const patient = JSON.parse(readFileSync(join(output, patientFile), "utf8"));
   assert.equal(patient.deidentified, true);
@@ -56,7 +56,7 @@ test("hospital CSV pipeline discovers multi-table ZIPs and quarantines ineligibl
   assert.equal(patient.visits[9].data_availability.reference_role, "withheld reference");
 });
 
-test("resumable ingestion persists a Doctor upload and requires Admin approval before release", async () => {
+test("resumable ingestion is Admin-only and requires approval before release", async () => {
   const root = mkdtempSync(join(tmpdir(), "ntu-ingestion-service-"));
   mkdirSync(join(root, "db"), { recursive: true });
   mkdirSync(join(root, "scripts"), { recursive: true });
@@ -72,9 +72,10 @@ test("resumable ingestion persists a Doctor upload and requires Admin approval b
   const admin = { id: adminRow.id, role: "admin" };
   const service = createIngestionService({ db, root });
   const bytes = hospitalFixture();
-  const created = service.create(doctor, { fileName: "hospital.zip", size: bytes.length, name: "Hospital test" });
-  await service.appendChunk(doctor, created.id, Readable.from(bytes), 0);
-  await service.complete(doctor, created.id);
+  assert.throws(() => service.create(doctor, { fileName: "hospital.zip", size: bytes.length, name: "Forbidden" }), /Administrator access/);
+  const created = service.create(admin, { fileName: "hospital.zip", size: bytes.length, name: "Hospital test" });
+  await service.appendChunk(admin, created.id, Readable.from(bytes), 0);
+  await service.complete(admin, created.id);
   const waitFor = async (status, timeoutMs = 8000) => {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
@@ -89,11 +90,11 @@ test("resumable ingestion persists a Doctor upload and requires Admin approval b
   service.saveMapping(admin, created.id, discovered.mapping);
   service.process(admin, created.id);
   const reviewed = await waitFor("Awaiting Approval");
-  assert.equal(reviewed.quality.eligibleCases, 1);
+  assert.equal(reviewed.quality.eligibleCases, 2);
   assert.equal(db.prepare("SELECT status FROM datasets WHERE id=?").get(reviewed.datasetId).status, "Pending Review");
   service.approve(admin, created.id, { decision: "Approved", visibility: "private" });
   assert.equal(db.prepare("SELECT status FROM datasets WHERE id=?").get(reviewed.datasetId).status, "Approved");
-  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM cases WHERE dataset_id=?").get(reviewed.datasetId).count, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS count FROM cases WHERE dataset_id=?").get(reviewed.datasetId).count, 2);
   resetDatabaseForTests();
   rmSync(root, { recursive: true, force: true });
 });

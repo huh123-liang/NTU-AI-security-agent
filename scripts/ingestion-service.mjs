@@ -53,7 +53,10 @@ export function createIngestionService({ db, root }) {
   const find = (jobId) => db.prepare(`SELECT j.*, u.display_name AS owner_name FROM ingestion_jobs j
     JOIN users u ON u.id = j.owner_id WHERE j.id = ?`).get(jobId);
 
-  const canAccess = (job, user) => Boolean(job && (user.role === "admin" || job.owner_id === user.id));
+  const requireAdmin = (user) => {
+    if (user?.role !== "admin") throw Object.assign(new Error("Administrator access is required for dataset ingestion."), { status: 403 });
+  };
+  const canAccess = (job, user) => Boolean(job && user?.role === "admin");
 
   const updateFromMessage = (jobId, message) => {
     const stage = String(message.stage || "processing");
@@ -144,12 +147,12 @@ export function createIngestionService({ db, root }) {
 
   return {
     list(user) {
-      const rows = user.role === "admin"
-        ? db.prepare(`SELECT j.*, u.display_name AS owner_name FROM ingestion_jobs j JOIN users u ON u.id=j.owner_id ORDER BY j.created_at DESC`).all()
-        : db.prepare(`SELECT j.*, u.display_name AS owner_name FROM ingestion_jobs j JOIN users u ON u.id=j.owner_id WHERE j.owner_id=? ORDER BY j.created_at DESC`).all(user.id);
+      requireAdmin(user);
+      const rows = db.prepare(`SELECT j.*, u.display_name AS owner_name FROM ingestion_jobs j JOIN users u ON u.id=j.owner_id ORDER BY j.created_at DESC`).all();
       return rows.map((row) => dto(row));
     },
     get(user, jobId) {
+      requireAdmin(user);
       const job = find(jobId);
       if (!canAccess(job, user)) return null;
       const events = db.prepare("SELECT stage,status,message,details_json,created_at FROM ingestion_events WHERE job_id=? ORDER BY created_at DESC LIMIT 100").all(jobId)
@@ -157,6 +160,7 @@ export function createIngestionService({ db, root }) {
       return dto(job, { includeDetails: true, events });
     },
     create(user, payload) {
+      requireAdmin(user);
       const fileName = path.basename(String(payload.fileName || ""));
       const size = Number(payload.size || 0);
       if (!fileName.toLowerCase().endsWith(".zip")) throw new Error("The preprocessing pipeline accepts ZIP files containing CSV or CSV.GZ tables.");
@@ -178,6 +182,7 @@ export function createIngestionService({ db, root }) {
       return this.get(user, jobId);
     },
     async appendChunk(user, jobId, req, offset) {
+      requireAdmin(user);
       const job = find(jobId);
       if (!canAccess(job, user)) return { error: "not_found" };
       if (job.status !== "Uploading") throw new Error("This upload is no longer accepting chunks.");
@@ -204,6 +209,7 @@ export function createIngestionService({ db, root }) {
       return { receivedBytes: next, complete: next === Number(job.source_size) };
     },
     async complete(user, jobId) {
+      requireAdmin(user);
       const job = find(jobId);
       if (!canAccess(job, user)) return null;
       if (Number(job.received_bytes) !== Number(job.source_size)) throw new Error(`Upload is incomplete: ${job.received_bytes} of ${job.source_size} bytes received.`);
@@ -247,7 +253,7 @@ export function createIngestionService({ db, root }) {
       if (!job.source_sha256) throw new Error("Upload and schema discovery must complete first.");
       const mapping = safeJson(job.mapping_json);
       if (!Array.isArray(mapping.tables) || !mapping.tables.length) throw new Error("Admin must confirm a field mapping before processing.");
-      const confirmedRules = { minimumVisits: 10, modelInputVisits: [1, 9], withheldReferenceVisit: 10,
+      const confirmedRules = { minimumVisits: 1, taskRouting: "adaptive", referencePolicy: "withhold_latest_only_when_multiple_records",
         criticalClinicalImputation: "forbidden", limitedLocf: { weightDays: 365, bmiDays: 365, heightDays: 1825 }, ...rules };
       const workDir = path.join(baseDir, jobId);
       writeFileSync(path.join(workDir, "mapping.json"), JSON.stringify(mapping, null, 2), "utf8");
@@ -274,6 +280,7 @@ export function createIngestionService({ db, root }) {
       return this.get(user, jobId);
     },
     retry(user, jobId) {
+      requireAdmin(user);
       const job = find(jobId);
       if (!canAccess(job, user)) return null;
       if (active.has(jobId)) throw new Error("This processing job is already running.");
@@ -283,6 +290,7 @@ export function createIngestionService({ db, root }) {
       return this.get(user, jobId);
     },
     cancel(user, jobId) {
+      requireAdmin(user);
       const job = find(jobId);
       if (!canAccess(job, user)) return null;
       active.get(jobId)?.kill();

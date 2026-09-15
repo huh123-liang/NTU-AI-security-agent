@@ -1,0 +1,76 @@
+{
+  "validationDate": "2026-09-15",
+  "source": {
+    "label": "MIMIC HOSP local directory",
+    "fileCount": 22,
+    "compressedBytes": 6300755975,
+    "compressedGiB": 5.868,
+    "allHeadersReadable": true,
+    "fullStreamIntegrityChecked": false,
+    "containsCoreTables": [
+      "patients.csv.gz",
+      "admissions.csv.gz",
+      "diagnoses_icd.csv.gz",
+      "omr.csv.gz",
+      "labevents.csv.gz",
+      "prescriptions.csv.gz"
+    ]
+  },
+  "pilot": {
+    "subjectCount": 25,
+    "zipBytes": 1689461,
+    "tables": 10,
+    "preprocessing": {
+      "sourceRows": 124715,
+      "eligibleCases": 25,
+      "quarantinedCases": 0,
+      "validMeasurementsBeforeVisitWindowing": 723,
+      "invalidMeasurements": 41,
+      "imputedDisplayFields": 66
+    },
+    "isolatedPlatformImport": {
+      "validCases": 25,
+      "quarantinedCases": 0,
+      "lineageRows": 197,
+      "taskTypes": {
+        "single_visit": 4,
+        "short_longitudinal": 11,
+        "standard_longitudinal": 10
+      }
+    },
+    "modelInputAssembly": {
+      "singleVisitPromptCharacters": 3389,
+      "shortLongitudinalPromptCharacters": 82407,
+      "standardLongitudinalPromptCharacters": 119104,
+      "externalModelCalled": false
+    }
+  },
+  "blockingRisks": [
+    {
+      "severity": "critical",
+      "code": "UNSAFE_AUTOMATIC_MAPPING",
+      "evidence": "Six non-patient identifier fields were suggested as patient_id; accepting the defaults created 2792 apparent patients from a 25-patient pilot."
+    },
+    {
+      "severity": "high",
+      "code": "LAB_DICTIONARY_NOT_JOINED",
+      "evidence": "The current canonical schema cannot join labevents.itemid to d_labitems.label; 22 of 25 pilot cases retained numeric lab item codes instead of human-readable analyte names."
+    },
+    {
+      "severity": "high",
+      "code": "MODEL_CONTEXT_TOO_LARGE",
+      "evidence": "Representative short and standard longitudinal prompts were 82407 and 119104 characters before a model call."
+    },
+    {
+      "severity": "high",
+      "code": "INSUFFICIENT_LOCAL_DISK_FOR_FULL_UPLOAD",
+      "evidence": "The source is 5.868 GiB and the platform requires 12.91 GiB free at job creation; 9.90 GiB was free on C: during validation."
+    },
+    {
+      "severity": "medium",
+      "code": "DIRECTORY_NOT_ACCEPTED",
+      "evidence": "The Admin ingestion endpoint accepts ZIP bundles; the supplied source is a directory of CSV.GZ files."
+    }
+  ],
+  "conclusion": "The corrected 25-patient pilot completes preprocessing and isolated SQLite import, but the unmodified full directory is not yet safe or operationally ready for one-click ingestion."
+}

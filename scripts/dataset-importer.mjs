@@ -39,41 +39,52 @@ function issueWriter(db, datasetId) {
   );
 }
 
-function validateLongitudinalPatient(patient, expectedId = null, strictTenVisits = false) {
+export function taskTypeForPatient(patient) {
+  const visits = Array.isArray(patient?.visits) ? patient.visits : [];
+  if (!visits.length || visits.every((visit) => !String(visit?.date || "").trim())) return "undated_snapshot";
+  if (visits.length === 1) return "single_visit";
+  if (visits.length < 10) return "short_longitudinal";
+  return "standard_longitudinal";
+}
+
+function validateLongitudinalPatient(patient, expectedId = null) {
   const errors = [];
   const warnings = [];
   const patientId = patientIdOf(patient);
   if (!patientId) errors.push("Patient ID is missing.");
   if (expectedId && patientId !== expectedId) errors.push(`Patient ID does not match manifest (${expectedId}).`);
   if (!Array.isArray(patient?.visits) || !patient.visits.length) errors.push("Longitudinal visits are missing.");
-  if (strictTenVisits && patient?.visits?.length !== 10) errors.push(`Expected 10 visits, found ${patient?.visits?.length || 0}.`);
-  if (!strictTenVisits && patient?.visits?.length < 2) warnings.push("Fewer than two visits; longitudinal evaluation will be limited.");
-  const dates = Array.isArray(patient?.visits) ? patient.visits.map((visit) => Date.parse(visit?.date || "")) : [];
-  if (dates.some((date) => !Number.isFinite(date))) errors.push("One or more visit dates are invalid.");
-  if (dates.some((date, index) => index > 0 && date < dates[index - 1])) errors.push("Visit dates are not chronological.");
+  const datedVisits = Array.isArray(patient?.visits) ? patient.visits.filter((visit) => String(visit?.date || "").trim()) : [];
+  const dates = datedVisits.map((visit) => Date.parse(visit.date));
+  if (dates.some((date) => !Number.isFinite(date))) errors.push("One or more supplied visit dates are invalid.");
+  if (dates.some((date, index) => index > 0 && date < dates[index - 1])) errors.push("Dated visits are not chronological.");
+  if (patient?.visits?.length === 1) warnings.push("Single-record case: no reference visit will be withheld.");
+  if (patient?.visits?.length > 1 && patient?.visits?.length < 10) warnings.push("Short longitudinal case: the latest record will be withheld as reference.");
+  if (patient?.visits?.length && datedVisits.length !== patient.visits.length) warnings.push("One or more records are undated; chronology-dependent claims are restricted.");
   if (patient?.synthetic !== true && patient?.synthetic !== false) warnings.push("The record does not declare whether it is synthetic or de-identified real-world data.");
   return { patientId, errors, warnings };
 }
 
-function persistPatient(db, datasetId, patient, sourceEntry, sourceBytes, strictTenVisits, expectedId, writeIssue, datasetVersionId = null) {
-  const quality = validateLongitudinalPatient(patient, expectedId, strictTenVisits);
+function persistPatient(db, datasetId, patient, sourceEntry, sourceBytes, _strictTenVisits, expectedId, writeIssue, datasetVersionId = null) {
+  const quality = validateLongitudinalPatient(patient, expectedId);
   quality.warnings.forEach((message) => writeIssue(quality.patientId || expectedId, "medium", "PATIENT_WARNING", message));
   if (quality.errors.length) {
     quality.errors.forEach((message) => writeIssue(quality.patientId || expectedId, "high", "INVALID_PATIENT", message));
     return false;
   }
   const visits = patient.visits;
-  const referenceVisit = visits[visits.length - 1];
+  const taskType = taskTypeForPatient(patient);
+  const referenceVisit = ["short_longitudinal", "standard_longitudinal"].includes(taskType) ? visits[visits.length - 1] : {};
   const conditions = Array.isArray(patient.conditions) ? patient.conditions : [];
-  const conditionSummary = conditions.map((condition) => condition.display || condition.key || condition.condition).filter(Boolean).join(" · ") || patient.condition || "Chronic-care review";
+  const conditionSummary = conditions.map((condition) => condition.display || condition.key || condition.condition).filter(Boolean).join(" · ") || patient.condition || "General clinical review";
   const caseId = id("CASE");
   db.prepare(`INSERT INTO cases (id, dataset_id, dataset_version_id, patient_id, age, sex, ethnicity, condition_summary, conditions_json,
-    visit_count, clinical_json, reference_visit_json, source_entry, source_sha256, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    visit_count, clinical_json, reference_visit_json, source_entry, source_sha256, task_type, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(caseId, datasetId, datasetVersionId, quality.patientId, Number(patient.age_at_visit_1 ?? patient.age ?? null),
       String(patient.sex || "unspecified"), String(patient.ethnicity || "unspecified"), conditionSummary,
       JSON.stringify(conditions), visits.length, JSON.stringify(patient), JSON.stringify(referenceVisit || {}),
-      sourceEntry, sha256(Buffer.from(sourceBytes)), now());
+      sourceEntry, sha256(Buffer.from(sourceBytes)), taskType, now());
   return caseId;
 }
 
@@ -111,7 +122,7 @@ function importSyntheaZip(db, datasetId, buffer) {
     }
     try {
       const patient = JSON.parse(text(archive[entry]));
-      if (persistPatient(db, datasetId, patient, entry, archive[entry], true, expectedId, writeIssue)) valid += 1;
+      if (persistPatient(db, datasetId, patient, entry, archive[entry], false, expectedId, writeIssue)) valid += 1;
       else quarantined += 1;
     } catch (error) {
       quarantined += 1;
@@ -162,12 +173,11 @@ function importFlatCsv(db, datasetId, buffer) {
     grouped.get(patientId).push({ ...record, __row: index + 2 });
   });
   for (const [patientId, rows] of grouped) {
-    if (rows.length < 2) {
-      quarantined += 1;
-      writeIssue(patientId, "high", "INSUFFICIENT_VISITS", "A longitudinal evaluation case requires at least two CSV rows/visits for the same patient.", { rows: rows.map((row) => row.__row) });
-      continue;
-    }
-    const ordered = [...rows].sort((a, b) => Date.parse(a.date || "") - Date.parse(b.date || ""));
+    const ordered = [...rows].sort((a, b) => {
+      const left = Date.parse(a.date || ""); const right = Date.parse(b.date || "");
+      if (!Number.isFinite(left) || !Number.isFinite(right)) return a.__row - b.__row;
+      return left - right;
+    });
     const conditions = [...new Set(rows.map((row) => row.condition || row.diagnosis).filter(Boolean))];
     const patient = {
       patient_id: patientId,
@@ -175,8 +185,8 @@ function importFlatCsv(db, datasetId, buffer) {
       age_at_visit_1: Number(ordered[0].age || 0) || null,
       sex: ordered[0].sex || "unspecified",
       ethnicity: ordered[0].ethnicity || "unspecified",
-      conditions: (conditions.length ? conditions : ["Chronic-care review"]).map((condition) => ({ key: condition.toLowerCase().replaceAll(/[^a-z0-9]+/g, "_"), display: condition })),
-      visits: ordered.map((record, visitIndex) => ({ visit_number: visitIndex + 1, date: record.date, status: "completed", source_row: Object.fromEntries(Object.entries(record).filter(([key]) => key !== "__row")) })),
+      conditions: (conditions.length ? conditions : ["General clinical review"]).map((condition) => ({ key: condition.toLowerCase().replaceAll(/[^a-z0-9]+/g, "_"), display: condition })),
+      visits: ordered.map((record, visitIndex) => ({ visit_number: visitIndex + 1, date: record.date || null, status: "completed", source_row: Object.fromEntries(Object.entries(record).filter(([key]) => key !== "__row")) })),
     };
     const bytes = Buffer.from(JSON.stringify(rows));
     if (persistPatient(db, datasetId, patient, `csv:rows-${rows[0].__row}-${rows.at(-1).__row}`, bytes, false, patientId, writeIssue)) valid += 1;
@@ -249,7 +259,7 @@ export function importProcessedDirectory({ db, ownerId, name, description = "", 
       try {
         const bytes = readFileSync(patientPath);
         const patient = JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, ""));
-        const caseId = persistPatient(db, datasetId, patient, relative, bytes, true, expectedId, writeIssue, versionId);
+        const caseId = persistPatient(db, datasetId, patient, relative, bytes, false, expectedId, writeIssue, versionId);
         if (caseId) {
           valid += 1;
           const insertLineage = db.prepare(`INSERT INTO record_lineage (id,dataset_version_id,case_id,patient_id,canonical_path,

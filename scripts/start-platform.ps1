@@ -48,17 +48,6 @@ function Remove-StaleRuntimeIdentity {
   }
 }
 
-function Test-DeepSeekHttps {
-  $client = New-Object System.Net.Sockets.TcpClient
-  try {
-    $pending = $client.BeginConnect("api.deepseek.com", 443, $null, $null)
-    if (-not $pending.AsyncWaitHandle.WaitOne(1800)) { return $false }
-    $client.EndConnect($pending)
-    return $true
-  } catch { return $false }
-  finally { $client.Dispose() }
-}
-
 function Find-Node {
   $command = Get-Command node.exe -ErrorAction SilentlyContinue
   if ($command -and (Test-Path -LiteralPath $command.Source)) { return $command.Source }
@@ -180,11 +169,11 @@ if (-not $readyPort) {
 }
 
 Write-Host "Ready: http://127.0.0.1:$readyPort/" -ForegroundColor Green
-if (Test-DeepSeekHttps) {
-  Write-Host "DeepSeek network check: reachable." -ForegroundColor Green
+if ($health.modelConfigured) {
+  Write-Host "$($health.activeModels) active model configuration(s) available. Credentials are stored locally." -ForegroundColor Green
 } else {
-  Write-Host "DeepSeek network check: blocked on HTTPS port 443." -ForegroundColor Yellow
-  Write-Host "The interface will open, but model generation requires firewall, proxy or network access to api.deepseek.com."
+  Write-Host "No active model credential is configured yet." -ForegroundColor Yellow
+  Write-Host "The interface will open. Sign in as Admin and use Model registry to add or test a provider."
 }
 Open-Platform $readyPort
 exit 0

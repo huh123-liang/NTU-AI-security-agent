@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — 2026-09-15
+
+- Moved all dataset upload and ingestion authority to Admin; Doctors now see only approved shared cohorts.
+- Added a versioned Model Registry for DeepSeek, Qwen, OpenAI, GLM and other OpenAI-compatible Chat Completions endpoints.
+- Added locally encrypted API credentials, masked API responses, connection testing, capability tags and Admin-confirmed dataset routing.
+- Added model-blinded Doctor views and distinct evaluation batches per case, task, model version and output.
+- Replaced the chronic-disease/10-visit eligibility gate with adaptive single-visit, short-longitudinal, standard-longitudinal and undated-snapshot tasks.
+- Expanded hospital field mapping to medications, procedures, allergies, generic observations and restricted clinical notes while preserving lineage and conservative missing-data rules.
+- Updated the Windows one-click launcher to validate the model registry rather than hard-code a DeepSeek network preflight.
+
 ## v1.6.0 - First-time setup wizard
 
 - Added bilingual `First-Time-Setup.cmd` and `首次安装向导.cmd` entry points.

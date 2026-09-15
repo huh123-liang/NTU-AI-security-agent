@@ -24,7 +24,7 @@ export default defineConfig(({ mode }) => {
   plugins: [react(), localApiPlugin(process.cwd(), {
     provider: env.MODEL_PROVIDER || env.MEDICAL_MODEL_PROVIDER || "deepseek",
     apiKey: env.MODEL_API_KEY || env.DEEPSEEK_API_KEY,
-    model: env.MODEL_NAME || env.DEEPSEEK_MODEL || "deepseek-v4-pro",
+    model: env.MODEL_NAME || env.DEEPSEEK_MODEL || "deepseek-chat",
     baseUrl: env.MODEL_API_URL || env.DEEPSEEK_API_URL || "https://api.deepseek.com",
     timeoutMs: env.MODEL_TIMEOUT_MS || 90000,
   })],

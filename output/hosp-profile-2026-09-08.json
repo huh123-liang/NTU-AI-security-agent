@@ -1,0 +1,174 @@
+{
+  "source": "hosp.zip",
+  "source_bytes": 3094487665,
+  "profile_scope": {
+    "fully_scanned": [
+      "patients",
+      "admissions",
+      "diagnoses_icd",
+      "omr"
+    ],
+    "header_only": [
+      "drgcodes",
+      "d_hcpcs",
+      "d_icd_diagnoses",
+      "d_icd_procedures",
+      "d_labitems",
+      "emar",
+      "emar_detail",
+      "hcpcsevents",
+      "microbiologyevents",
+      "pharmacy",
+      "poe",
+      "poe_detail",
+      "procedures_icd",
+      "provider",
+      "services",
+      "transfers"
+    ]
+  },
+  "archive": {
+    "entry_count": 21,
+    "csv_gz_count": 20,
+    "total_stored_bytes": 3101548230,
+    "suspicious_path_count": 0,
+    "entries": [
+      "hosp/",
+      "hosp/admissions.csv.gz",
+      "hosp/diagnoses_icd.csv.gz",
+      "hosp/drgcodes.csv.gz",
+      "hosp/d_hcpcs.csv.gz",
+      "hosp/d_icd_diagnoses.csv.gz",
+      "hosp/d_icd_procedures.csv.gz",
+      "hosp/d_labitems.csv.gz",
+      "hosp/emar.csv.gz",
+      "hosp/emar_detail.csv.gz",
+      "hosp/hcpcsevents.csv.gz",
+      "hosp/microbiologyevents.csv.gz",
+      "hosp/omr.csv.gz",
+      "hosp/patients.csv.gz",
+      "hosp/pharmacy.csv.gz",
+      "hosp/poe.csv.gz",
+      "hosp/poe_detail.csv.gz",
+      "hosp/procedures_icd.csv.gz",
+      "hosp/provider.csv.gz",
+      "hosp/services.csv.gz",
+      "hosp/transfers.csv.gz"
+    ]
+  },
+  "patients": {
+    "rows": 364627,
+    "unique_subject_ids": 364627,
+    "duplicate_subject_rows": 0,
+    "gender_counts": {
+      "F": 191984,
+      "M": 172643
+    },
+    "anchor_age": {
+      "count": 364627,
+      "min": 18,
+      "median": 48,
+      "p90": 79,
+      "p95": 85,
+      "max": 91,
+      "mean": 48.875
+    },
+    "missing_dod": 326326,
+    "missing_dod_rate": 0.894958
+  },
+  "admissions": {
+    "rows": 546028,
+    "unique_hadm_ids": 546028,
+    "duplicate_hadm_rows": 0,
+    "unique_subject_ids": 223452,
+    "orphan_subject_rows": 0,
+    "invalid_or_missing_time_rows": 0,
+    "discharge_before_admit_rows": 175,
+    "admissions_per_patient": {
+      "count": 223452,
+      "min": 1,
+      "median": 1,
+      "p90": 5,
+      "p95": 7,
+      "max": 238,
+      "mean": 2.444
+    },
+    "patients_with_2plus_admissions": 100163,
+    "patients_with_10plus_admissions": 7017,
+    "year_min": "2105",
+    "year_max": "2214"
+  },
+  "diagnoses": {
+    "rows": 6364488,
+    "distinct_icd_version_code_pairs": 28583,
+    "orphan_subject_rows": 0,
+    "orphan_hadm_rows": 0,
+    "missing_code_rows": 0,
+    "chronic_condition_patient_counts": {
+      "hyperlipidaemia": 80609,
+      "hypertension": 111008,
+      "diabetes": 46312,
+      "ckd": 29257
+    },
+    "patients_with_any_target_chronic_condition": 130801,
+    "patients_with_all_four_target_conditions": 11303
+  },
+  "omr": {
+    "rows": 7753027,
+    "unique_subject_ids": 193501,
+    "orphan_subject_rows": 0,
+    "missing_result_value_rows": 0,
+    "distinct_dates_per_patient": {
+      "count": 193501,
+      "min": 1,
+      "median": 5,
+      "p90": 41,
+      "p95": 64,
+      "max": 655,
+      "mean": 15.07
+    },
+    "patients_with_2plus_dates": 151865,
+    "patients_with_10plus_dates": 68934,
+    "malformed_blood_pressure_rows": 0,
+    "top_result_names": {
+      "Blood Pressure": 2827801,
+      "Weight (Lbs)": 2145353,
+      "BMI (kg/m2)": 1901496,
+      "Height (Inches)": 814964,
+      "BMI": 29021,
+      "Weight": 15108,
+      "Blood Pressure Sitting": 5757,
+      "Blood Pressure Standing (1 min)": 4704,
+      "Blood Pressure Lying": 4359,
+      "Height": 2365,
+      "Blood Pressure Standing (3 mins)": 1255,
+      "Blood Pressure Standing": 565,
+      "eGFR": 279
+    },
+    "selected_metric_result_names": {
+      "Blood Pressure": 2827801,
+      "Blood Pressure Lying": 4359,
+      "Blood Pressure Sitting": 5757,
+      "Blood Pressure Standing": 565,
+      "Blood Pressure Standing (1 min)": 4704,
+      "Blood Pressure Standing (3 mins)": 1255,
+      "eGFR": 279
+    }
+  },
+  "platform_fit": {
+    "direct_import_supported": false,
+    "reason": "The current MVP2 ZIP importer requires manifest.csv and per-patient JSON files; this archive contains relational CSV.GZ tables.",
+    "candidate_visit_sources": [
+      "admissions.admittime",
+      "omr.chartdate"
+    ],
+    "reference_visit_policy_needed": true,
+    "missing_core_table": "labevents.csv.gz is not present, so d_labitems alone cannot provide laboratory results.",
+    "eligible_cohort_counts": {
+      "target_chronic_condition_and_10plus_admissions": 6215,
+      "target_chronic_condition_and_10plus_omr_dates": 40774,
+      "all_four_target_conditions_and_10plus_omr_dates": 5325,
+      "target_chronic_condition_and_either_10plus_source_dates": 41786
+    }
+  }
+}

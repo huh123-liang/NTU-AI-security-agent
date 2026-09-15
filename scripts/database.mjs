@@ -71,6 +71,36 @@ function migrateDatasetVersioning(db) {
   db.exec("CREATE INDEX IF NOT EXISTS idx_runs_dataset_version ON agent_runs(dataset_version_id)");
 }
 
+function migrateFlexibleEvaluation(db) {
+  ensureColumn(db, "cases", "task_type", "TEXT NOT NULL DEFAULT 'standard_longitudinal'");
+  ensureColumn(db, "agent_runs", "model_config_id", "TEXT");
+  ensureColumn(db, "agent_runs", "task_type", "TEXT NOT NULL DEFAULT 'standard_longitudinal'");
+  ensureColumn(db, "agent_runs", "anonymous_model_label", "TEXT NOT NULL DEFAULT 'Model A'");
+  ensureColumn(db, "agent_runs", "evaluation_batch_id", "TEXT");
+  db.prepare(`UPDATE cases SET task_type = CASE
+    WHEN visit_count <= 1 AND COALESCE(json_extract(clinical_json, '$.visits[0].date'), '') = '' THEN 'undated_snapshot'
+    WHEN visit_count <= 1 THEN 'single_visit'
+    WHEN visit_count < 10 THEN 'short_longitudinal'
+    ELSE 'standard_longitudinal' END`).run();
+  db.exec("CREATE INDEX IF NOT EXISTS idx_models_status ON model_configs(status, is_default)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_runs_model_config ON agent_runs(model_config_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_batches_case ON evaluation_batches(case_id, task_type, model_config_id)");
+}
+
+function migrateDatasetOwnershipToAdmin(db, adminId) {
+  const rows = db.prepare("SELECT id, owner_id, provenance_json FROM datasets WHERE owner_id != ?").all(adminId);
+  for (const row of rows) {
+    let provenance = {};
+    try { provenance = JSON.parse(row.provenance_json || "{}"); } catch { provenance = {}; }
+    if (!provenance.originalUploaderId) provenance.originalUploaderId = row.owner_id;
+    provenance.adminOwnershipMigratedAt ||= now();
+    db.prepare("UPDATE datasets SET owner_id = ?, provenance_json = ? WHERE id = ?")
+      .run(adminId, JSON.stringify(provenance), row.id);
+    audit(db, adminId, "dataset.ownership_migrated_to_admin", "dataset", row.id, { originalOwnerId: row.owner_id });
+  }
+  db.prepare("UPDATE ingestion_jobs SET owner_id = ? WHERE owner_id != ?").run(adminId, adminId);
+}
+
 export function getDatabase(root) {
   if (instance?.root === root) return instance.db;
   const dataDir = path.join(root, ".data");
@@ -80,10 +110,12 @@ export function getDatabase(root) {
   const schemaPath = path.join(root, "db", "schema.sql");
   if (!existsSync(schemaPath)) throw new Error("SQL schema is missing.");
   db.exec(readFileSync(schemaPath, "utf8"));
+  const adminId = seedAdmin(db);
   migrateRunLifecycle(db);
   migrateStudyGovernance(db);
   migrateDatasetVersioning(db);
-  seedAdmin(db);
+  migrateFlexibleEvaluation(db);
+  migrateDatasetOwnershipToAdmin(db, adminId);
   db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now());
   instance = { root, db };
   return db;
