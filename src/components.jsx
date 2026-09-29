@@ -1,6 +1,6 @@
 import {
   ArrowsClockwise, Bell, CaretRight, CheckCircle, Database, FirstAidKit, Info, LockKey,
-  SignOut, Sparkle, UserCircle, WarningCircle, X,
+  SignOut, Sparkle, Translate, UserCircle, WarningCircle, X,
 } from "@phosphor-icons/react";
 
 export function Brand() {
@@ -24,19 +24,20 @@ export function ErrorState({ message, retry }) {
   return <div className="loading-state error-state"><WarningCircle size={28} /><b>Something needs attention</b><span>{message}</span>{retry && <button className="secondary-button" onClick={retry}>Try again</button>}</div>;
 }
 
-export function Shell({ user, route, navigate, navItems, children, onLogout, onFeedback }) {
-  return <div className="app-shell">
+export function Shell({ user, route, navigate, navItems, children, onLogout, onFeedback, locale = "en", onLocaleChange }) {
+  const doctorMode = user.role === "doctor";
+  return <div className={`app-shell ${doctorMode ? "doctor-shell" : "admin-shell"} route-${route}`}>
     <aside className="sidebar">
       <Brand />
       <div className="portal-label"><span>{user.role === "admin" ? "ADMIN PORTAL" : "DOCTOR PORTAL"}</span><small>Local research environment</small></div>
-      <nav>{navItems.map(({ key, label, icon: Icon }) => <button key={key} className={route === key ? "active" : ""} onClick={() => navigate(key)}><Icon size={19} /><span>{label}</span><CaretRight className="nav-caret" size={12} /></button>)}</nav>
+      <nav>{navItems.map(({ key, label, labelZh, icon: Icon }) => { const resolvedLabel = locale === "zh" && labelZh ? labelZh : label; return <button key={key} title={resolvedLabel} aria-label={resolvedLabel} className={route === key ? "active" : ""} onClick={() => navigate(key)}><Icon size={19} /><span>{resolvedLabel}</span><CaretRight className="nav-caret" size={12} /></button>; })}</nav>
       <div className="sidebar-footer">
         {user.role === "doctor" && <button className="sidebar-feedback" onClick={onFeedback}><Sparkle size={17} />Platform feedback</button>}
         <div className="account-card"><UserCircle size={34} weight="fill" /><span><b>{user.displayName}</b><small>{user.role === "admin" ? "Platform administrator" : "Clinical evaluator"}</small></span><button aria-label="Sign out" onClick={onLogout}><SignOut size={18} /></button></div>
       </div>
     </aside>
     <section className="app-main">
-      <header className="topbar"><div className="environment-chip"><span />RESEARCH PROTOTYPE · LOCAL SQLITE</div><div className="top-actions"><small>{new Date().toLocaleDateString("en-SG", { day: "2-digit", month: "short", year: "numeric" })}</small><button className="icon-button" aria-label="Notifications"><Bell size={18} /></button></div></header>
+      <header className="topbar"><div className="environment-chip"><span />RESEARCH PROTOTYPE · LOCAL SQLITE</div><div className="top-actions">{doctorMode && <button className="language-toggle" onClick={() => onLocaleChange?.(locale === "en" ? "zh" : "en")} aria-label="Change interface language"><Translate size={16} /><span>{locale === "en" ? "中文" : "EN"}</span></button>}<small>{new Date().toLocaleDateString(locale === "zh" ? "zh-CN" : "en-SG", { day: "2-digit", month: locale === "zh" ? "long" : "short", year: "numeric" })}</small><button className="icon-button" aria-label="Notifications"><Bell size={18} /></button></div></header>
       <main className={route === "workspace" ? "page workspace-page" : "page"}>{children}</main>
     </section>
   </div>;

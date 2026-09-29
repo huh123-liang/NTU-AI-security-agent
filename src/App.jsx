@@ -17,6 +17,7 @@ export function App() {
   const [location, setLocation] = useState(readRoute);
   const [toast, setToast] = useState("");
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [locale, setLocale] = useState(() => window.localStorage.getItem("ntu-med-eval-locale") || "en");
 
   useEffect(() => {
     if (!sessionStore.get()) return;
@@ -37,6 +38,7 @@ export function App() {
 
   const navigate = (route, id = "") => { window.location.hash = `#/${route}${id ? `/${encodeURIComponent(id)}` : ""}`; };
   const authenticated = (account) => { setUser(account); navigate("overview"); };
+  const changeLocale = (value) => { window.localStorage.setItem("ntu-med-eval-locale", value); setLocale(value); };
   const logout = async () => {
     try { await api.logout(); } catch { /* Always clear the local session. */ }
     sessionStore.clear(); setUser(null); window.location.hash = "";
@@ -50,10 +52,10 @@ export function App() {
   const activeRoute = allowed.has(location.route) ? location.route : "overview";
 
   return <>
-    <Shell user={user} route={activeRoute} navigate={navigate} navItems={navItems} onLogout={logout} onFeedback={() => setFeedbackOpen(true)}>
+    <Shell user={user} route={activeRoute} navigate={navigate} navItems={navItems} onLogout={logout} onFeedback={() => setFeedbackOpen(true)} locale={locale} onLocaleChange={changeLocale}>
       {user.role === "admin"
         ? <AdminPortal route={activeRoute} routeId={location.routeId} navigate={navigate} notify={notify} />
-        : <DoctorPortal route={activeRoute} routeId={location.routeId} navigate={navigate} notify={notify} user={user} />}
+        : <DoctorPortal route={activeRoute} routeId={location.routeId} navigate={navigate} notify={notify} user={user} locale={locale} />}
     </Shell>
     {feedbackOpen && <PlatformFeedbackModal page={activeRoute} onClose={() => setFeedbackOpen(false)} onSaved={() => { setFeedbackOpen(false); notify("Platform feedback saved to the Admin inbox."); }} />}
     <Toast message={toast} />

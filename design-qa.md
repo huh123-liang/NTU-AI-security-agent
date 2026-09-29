@@ -1,49 +1,73 @@
-# MVP2 Design QA — Clinician Comparison Board
+# MVP2 Design QA — Epic-style Doctor Portal
 
-- Reference: `C:\Users\Lenovo\AppData\Local\Temp\codex-clipboard-808f9f82-9786-4a5f-bdce-473770407954.png`
-- Verified implementation: `http://127.0.0.1:4190/#/evaluations`
-- Verification date: 2 September 2026
-- Verified case: `SG-SYN-000002`
-- Verified reviewers: `123`, `213`, and `321`
+## Comparison target
 
-## Reference versus implementation
+- Source visual truth: UPenn *Exploring Epic and Carelign* training video, Visit Report at `06:11` and Summary/Chart Review at `03:11` (`https://bcove.video/3Qe3uC2`).
+- Product-direction reference: `C:\Users\Lenovo\AppData\Local\Temp\codex-clipboard-f0e3df4a-bd88-4eee-8020-d086165d0e2b.png`.
+- Rendered implementation: `http://127.0.0.1:4180/#/workspace/CASE-9A452BC7D5E741399A`.
+- Implementation screenshot path: Codex in-app browser capture, tab `4`, retained as the visible deliverable for this task.
+- Verification date: 29 September 2026.
+- Viewport: 1280 × 720 CSS pixels, device scale factor 1.
+- Source pixels: 1280 × 720 browser capture. Implementation pixels: 1280 × 720 browser capture. No density resampling was required.
+- State: authenticated Doctor `123`, de-identified MIMIC case `MIMIC-HOSP-0001891D86`, fixed completed Official Run, no assessment submitted.
 
-The reference modal used one narrow vertical column. Only the first clinician and part of the second clinician were visible, so scores and feedback could not be compared at the same eye position.
+## Full-view comparison evidence
 
-The implemented modal expands to 94% of the viewport and presents the selected clinicians in equal-width columns. Each rubric and support field is rendered as a shared horizontal row, so the same dimension remains aligned across every clinician. The established NTU navy/crimson visual language, existing typography, cards, icon library, and data labels were preserved.
+The source and implementation were captured and viewed together in one comparison pass at the same 1280 × 720 viewport. The implementation carries over the clinically important Epic patterns without copying Epic branding: a persistent patient context, compact blue clinical navigation, dense tabular longitudinal data, low-radius bordered panels, small typography, and contextual review panes. The product-specific Evidence and Evaluation functions remain in the right sidecar so the existing research workflow is preserved.
 
-## Browser QA evidence
+Intentional differences:
 
-The following states were exercised in the running local product through the Codex in-app browser:
+- NTU branding and the existing navy/crimson research identity are retained; no Epic logos or copyrighted assets are reproduced.
+- The source's ordering, prescribing, discharge, and other hospital-operational controls are omitted because this platform is an evaluation tool.
+- The implementation uses a fixed top patient banner rather than exposing identifiable hospital demographics in a left Epic rail.
+- AI Response, source evidence, and the six-dimension clinician rubric are product requirements that do not appear in the source Epic screen.
 
-1. Three-clinician detailed comparison: all three clinician headers, overall scores, six rubric dimensions, safety-critical results, missing/clarification items, and case feedback were visible in parallel.
-2. Sticky headers: clinician identity and overall score remained visible while the comparison body was vertically scrolled.
-3. Long feedback: expanding clinician `123` case feedback increased the whole shared row while keeping the other two clinician cells aligned; collapsing restored the compact state.
-4. Two-clinician comparison: deselecting clinician `321` produced two centered equal-width cards; reselecting restored the three-column board.
-5. Disagreement visibility: rubric rows with a score spread of 2 points were highlighted, with Highest and Lowest labels shown beside the relevant scores.
-6. Browser console: no warnings or errors were present after the comparison interactions.
+## Focused region comparison evidence
 
-## Responsive and edge-state review
+- Patient context: verified fixed patient ID, age, sex, allergy status, cohort, Official Run status, and review progress.
+- Clinical navigation and flowsheet: verified Patient Summary, Chart Review, Labs, Medications, Diagnoses, Documents, and Source Record; Chart Review and Labs render visit-by-measure tables with missing cells left blank.
+- Evidence traceability: clicking `V1 · Systolic blood pressure` switched the right sidecar to Evidence, highlighted BP and Visit 1 in the centre pane, and opened a human-readable Clinical record trace dialog.
+- Evaluation: verified six independently collapsible dimensions, 1–5 controls, preset tags, custom tag input, free-text feedback, safety checks, and sticky Save/Submit actions.
+- Language: verified English default and Chinese navigation/context toggle without changing case or assessment state.
+- Worklist: verified dataset filtering, search, readiness/status filters, Official Run status, and current doctor's assessment status only.
 
-- Two selected clinicians: centered board with two equal columns.
-- Three selected clinicians: full-width three-column board.
-- Four selected clinicians: four equal columns with a minimum board width of 1280 pixels.
-- Narrow viewport: the comparison body keeps its columns and becomes horizontally scrollable instead of stacking the cards.
-- Five or more candidates: the existing compact matrix remains available instead of forcing an unreadable detailed-card layout.
-- Long tags and comments use wrapping; identity fields use ellipsis where a single-line header is required.
+## Required fidelity surfaces
 
-## Severity findings
+- Fonts and typography: Inter is used consistently; compact 6.5–14 px UI hierarchy matches the dense clinical reference while preserving readable body text in the AI pane. Long identifiers now use deliberate ellipsis with full-value titles.
+- Spacing and layout rhythm: 72 px icon rail, 112 px patient/progress header, 160 px clinical navigator, flexible clinical centre, and 380 px review sidecar produce a stable dense desktop grid. Borders, 2–6 px radii, and minimal elevation align with the clinical reference.
+- Colors and tokens: pale clinical blue, white, navy, green status, amber allergy alert, and restrained NTU crimson are semantically consistent and maintain visible contrast.
+- Image quality and asset fidelity: the target contains no required product imagery. The implementation uses one consistent Phosphor icon family and no emoji, placeholder illustrations, CSS drawings, or copied Epic assets.
+- Copy and content: UI copy distinguishes de-identified research records, fixed Official Runs, source-backed evidence, missing measurements, and editable-until-lock assessments. Model identity is blinded as `Model A` for Doctors.
+
+## Comparison history
+
+### Iteration 1 — blocked
+
+- [P2] Narrow-rail feedback label wrapped beside its icon.
+  - Fix: visually hid the label in Doctor mode while preserving its accessible button name; normalized the icon to 18 px.
+- [P2] `available source metrics` could imply that absent HbA1c/eGFR/LDL series existed.
+  - Fix: changed the summary to `4 monitored metrics`; missing series explicitly render `No source series` and are never reconstructed.
+- [P2] Long patient IDs in the summary card were clipped unpredictably by the record-status badge.
+  - Fix: added flex constraints, deliberate ellipsis, and a full-value title on patient IDs; added a title to truncated allergy text.
+
+### Iteration 2 — passed
+
+- Post-fix browser capture confirmed a clean 72 px rail, accurate missing-data copy, and stable ellipsis with no overlap.
+- Evidence, Evaluation, Chart Review, Labs, Source Record, and language interactions remained functional after the fixes.
+- Browser console check: 0 warnings, 0 errors.
+- `npm.cmd run build`: passed.
+- `npm.cmd test`: 17 passed, 0 failed, 1 intentionally skipped because the optional source ZIP is absent from the working tree.
+
+## Findings
 
 - P0: none.
 - P1: none.
-- P2: none in the tested three-clinician and two-clinician flows.
-- Coverage note: the live seed case contained three comparable assessments, so the four-clinician layout was verified through implementation rules and production build rather than a four-record browser state.
+- P2: none after Iteration 2.
+- P3: the Chinese toggle localizes the clinician navigation and patient-context shell; source clinical terminology and AI output remain in their original English to avoid altering evidence-bearing content.
 
-## Functional verification
+## Residual test gaps
 
-- `npm.cmd run build`: passed.
-- `npm.cmd test`: 12 passed, 0 failed.
-- Production page: loaded from the local port 4190 service.
-- Comparison selection, scroll, expand/collapse, and disagreement states: passed.
+- Mobile layout was not tested because the agreed target is desktop/laptop at 1366–1920 px and the product is not intended for mobile review.
+- Hover tooltips for deliberately truncated text were checked through title attributes rather than pointer capture.
 
 final result: passed

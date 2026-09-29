@@ -6,8 +6,10 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 
 ## Confirmed Product Direction
 
-- The current visual source of truth is `design-references/selected-evidence-lens-v1.png`; the earlier Safety Review Cockpit remains the structural baseline.
-- Preserve the three-column clinical workspace and full-height deep navy navigation, while adding the selected Evidence Lens interaction, real five-stage generation trail and restrained constellation language.
+- The current Doctor Portal visual source of truth is the UPenn Epic/Carelign training reference supplied by the user: an Epic-style patient header, compact clinical navigator, high-density central chart workspace and a right-side review sidecar. Preserve NTU branding and do not copy Epic trademarks or proprietary assets.
+- Doctor Portal uses a narrow navy icon rail, Patient Worklist, fixed Patient Header, compact four-stage status bar, Clinical Navigator, central Summary/Chart Review/Labs/Medications/Diagnoses/Documents/Source Record views, and a tabbed AI Response/Evidence/Evaluation sidecar. Login and Admin Portal retain their existing structure.
+- Default UI language is English with a Chinese toggle. Target desktop and laptop widths from 1366px to 1920px; mobile is out of scope for this iteration.
+- Do not add fake Epic functions such as ordering, prescribing, discharge workflows or Secure Chat. The redesign must preserve the platform's real case review, AI response, evidence-trace and scoring capabilities.
 - The product is an English-language desktop web prototype for clinicians evaluating one virtual doctor's response to a longitudinal chronic-disease case. It supports both simulated cohorts and locally approved, de-identified real-world derived cohorts.
 - Required end-to-end screens: sign in, dashboard, case list, evaluation workspace, submission confirmation, assessment history/summary, case feedback, and platform feedback.
 - Use NTU-inspired navy and restrained crimson. Keep the interface clinical, premium, dense but readable, and label every case accurately as either synthetic or de-identified real-world research data.

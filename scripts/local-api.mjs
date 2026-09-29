@@ -604,10 +604,36 @@ export function localApiPlugin(root, modelConfig = {}) {
             const limit = Math.min(100, Math.max(10, Number(url.searchParams.get("limit") || 40)));
             const offset = (page - 1) * limit;
             const total = Number(db.prepare("SELECT COUNT(*) AS count FROM cases WHERE dataset_id = ? AND (patient_id LIKE ? OR condition_summary LIKE ?)").get(datasetId, search, search).count);
-            const rows = db.prepare(`SELECT c.*, d.name AS dataset_name FROM cases c JOIN datasets d ON d.id = c.dataset_id
+            const rows = db.prepare(`SELECT c.*, d.name AS dataset_name,
+              r.id AS official_run_id, r.status AS official_run_status, r.lifecycle_status AS official_lifecycle_status,
+              r.study_status AS official_study_status, r.anonymous_model_label, r.completed_at AS official_completed_at,
+              a.status AS assessment_status, a.locked AS assessment_locked, a.updated_at AS assessment_updated_at
+              FROM cases c JOIN datasets d ON d.id = c.dataset_id
+              LEFT JOIN agent_runs r ON r.id = (
+                SELECT r2.id FROM agent_runs r2 WHERE r2.case_id = c.id
+                AND r2.study_status IN ('Official', 'Official pending', 'Official failed')
+                ORDER BY CASE r2.study_status WHEN 'Official' THEN 0 WHEN 'Official pending' THEN 1 ELSE 2 END, r2.created_at DESC LIMIT 1
+              )
+              LEFT JOIN assessments a ON a.id = (
+                SELECT a2.id FROM assessments a2 WHERE a2.run_id = r.id AND a2.reviewer_id = ? ORDER BY a2.updated_at DESC LIMIT 1
+              )
               WHERE c.dataset_id = ? AND (c.patient_id LIKE ? OR c.condition_summary LIKE ?) ORDER BY c.patient_id LIMIT ? OFFSET ?`)
-              .all(datasetId, search, search, limit, offset);
-            return send(res, 200, { items: rows.map((row) => caseDto(row)), total, page, limit });
+              .all(user.id, datasetId, search, search, limit, offset);
+            return send(res, 200, { items: rows.map((row) => ({
+              ...caseDto(row),
+              officialRun: row.official_run_id ? {
+                id: row.official_run_id,
+                status: row.official_lifecycle_status || row.official_run_status,
+                studyStatus: row.official_study_status,
+                anonymousModelLabel: row.anonymous_model_label || "Model A",
+                completedAt: row.official_completed_at,
+              } : null,
+              myAssessment: row.assessment_status ? {
+                status: row.assessment_locked ? "Locked" : row.assessment_status,
+                locked: Boolean(row.assessment_locked),
+                updatedAt: row.assessment_updated_at,
+              } : null,
+            })), total, page, limit });
           }
 
           const caseMatch = pathname.match(/^\/cases\/([^/]+)$/);
