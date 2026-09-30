@@ -327,8 +327,10 @@ button:disabled { opacity:.55; cursor:not-allowed; }
 .doctor-shell .sidebar-feedback span { display:none; }
 .doctor-shell .sidebar-feedback { font-size:0; }
 .doctor-shell .sidebar-feedback svg { width:18px; height:18px; flex:0 0 auto; }
-.doctor-shell .account-card { min-height:64px; display:grid; grid-template-columns:1fr; justify-items:center; padding:8px 0; gap:4px; }
-.doctor-shell .account-card > span,.doctor-shell .account-card > button { display:none; }
+.doctor-shell .account-card { min-height:96px; display:grid; grid-template-columns:1fr; grid-template-rows:34px 36px; justify-items:center; padding:8px 0; gap:5px; }
+.doctor-shell .account-card > span { display:none; }
+.doctor-shell .account-card > button { display:grid; width:48px; height:36px; border-radius:4px; color:#dbeafa; }
+.doctor-shell .account-card > button:hover,.doctor-shell .account-card > button:focus-visible { color:#fff; background:#c8102e; outline:2px solid rgba(255,255,255,.8); outline-offset:1px; }
 .doctor-shell .account-card > svg { width:31px; height:31px; }
 .doctor-shell .app-main { width:calc(100% - 72px); margin-left:72px; }
 .doctor-shell .topbar { height:52px; padding:0 18px; border-bottom-color:#cddbe7; }

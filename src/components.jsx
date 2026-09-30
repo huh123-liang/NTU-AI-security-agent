@@ -33,7 +33,7 @@ export function Shell({ user, route, navigate, navItems, children, onLogout, onF
       <nav>{navItems.map(({ key, label, labelZh, icon: Icon }) => { const resolvedLabel = locale === "zh" && labelZh ? labelZh : label; return <button key={key} title={resolvedLabel} aria-label={resolvedLabel} className={route === key ? "active" : ""} onClick={() => navigate(key)}><Icon size={19} /><span>{resolvedLabel}</span><CaretRight className="nav-caret" size={12} /></button>; })}</nav>
       <div className="sidebar-footer">
         {user.role === "doctor" && <button className="sidebar-feedback" onClick={onFeedback}><Sparkle size={17} />Platform feedback</button>}
-        <div className="account-card"><UserCircle size={34} weight="fill" /><span><b>{user.displayName}</b><small>{user.role === "admin" ? "Platform administrator" : "Clinical evaluator"}</small></span><button aria-label="Sign out" onClick={onLogout}><SignOut size={18} /></button></div>
+        <div className="account-card"><UserCircle size={34} weight="fill" /><span><b>{user.displayName}</b><small>{user.role === "admin" ? "Platform administrator" : "Clinical evaluator"}</small></span><button aria-label="Sign out" title={locale === "zh" ? "退出登录" : "Sign out"} onClick={onLogout}><SignOut size={18} /></button></div>
       </div>
     </aside>
     <section className="app-main">
