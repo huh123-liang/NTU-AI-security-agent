@@ -1,0 +1,278 @@
+# 历史项目指南（截至 2026-09-15）
+
+> 历史快照，仅供复盘，不作为当前安装、权限、界面或模型配置的操作指南。旧规则和当地电脑路径保留原样。当前规则请看[中文项目指南](../../项目指南.md)与[当前进展](../project/STATUS.md)。
+
+> 用途：供下一次 Codex 任务或新开发者快速恢复项目状态。更新时间：2026-08-19。工作目录：`C:\Users\Lenovo\Desktop\NTU\NTU AI security agents\MVP2`。
+
+> **2026-09-15 架构更新（优先于下文旧版本描述）**：数据集改为仅 Admin 上传、映射、预处理和审批；Doctor 只能选择已批准并共享的病例库。平台不再要求特定慢性病或至少 10 次就诊，而是按 `single_visit`、`short_longitudinal`、`standard_longitudinal`、`undated_snapshot` 四类自动路由。Admin 新增 `Model registry`，可版本化配置 DeepSeek、Qwen、OpenAI、GLM 或其他 OpenAI-compatible Chat Completions 服务；API Key 通过 AES-256-GCM 加密保存在本地 SQLite，主密钥位于 Git 忽略的 `.data/secrets/`。同一病例可针对不同模型形成独立 evaluation batch，Doctor 只看到 `Model A/B/...`，Admin 才能看到真实模型。下文涉及“Doctor 上传”“固定 Visits 1–9 → Visit 10”“只支持 DeepSeek”的内容均属于历史实现，不再是当前规则。
+
+## 1. 项目定位
+
+MVP2 是面向临床医生的本地研究平台，用真实医生的独立评分与反馈形成可审计 Ground Truth。当前聚焦慢性病纵向随访：模型读取患者第 1–9 次就诊，生成第 10 次随访方案；真实第 10 次模拟记录不发送给模型，作为医生可追溯的参考证据。
+
+平台不是医疗器械，不用于真实患者诊疗。当前数据为 Synthea-SG 合成研究数据。
+
+## 2. 已确认并实现的产品规则
+
+### 2.1 统一登录与权限
+
+- 一个统一登录页，可切换 Doctor Portal / Admin Portal。
+- Doctor 使用 Display name、Email、Password 自助注册，注册后立即登录。
+- Admin 只有一个本地账户：`admin@ntu-demo.local`，密码 `123`。
+- 密码以随机盐 + scrypt 哈希保存，不保存明文。
+- Session Token 只保存哈希，12 小时过期。
+- Admin 可停用或重新启用 Doctor；历史评估不会被删除。
+- Doctor 只能读取和修改自己的评估，不能读取其他 Doctor 的评分与反馈。
+- Admin 可以看到全部用户、数据集、模型运行、评分和反馈。
+
+### 2.2 数据集访问
+
+- Doctor 可上传 ZIP、JSON、CSV。
+- Doctor 上传的数据集默认 `Pending Review` 且 `private`：上传者本人和 Admin 可见，其他 Doctor 不可见。
+- Admin 可拒绝、仅批准给上传者使用，或批准并共享给所有 Doctor。
+- Admin 自己导入的数据可直接批准。
+- 原始文件保存到 `.data/uploads/`，数据库记录文件名、格式、SHA-256、来源、导入时间和质量问题。
+
+### 2.3 病例和模型运行
+
+- 每个病例必须是通过结构校验的纵向记录。
+- Doctor 自行选择数据集和病例。
+- 同一病例可以存在多个自由文本模型运行；不同 Doctor 可选择同一运行进行评分，也可生成新的运行。
+- 模型输入保存为版本化快照，只包含第 1–9 次就诊；第 10 次记录单独作为 `reference_visit_json` 保存。
+- 当前 Provider 为 DeepSeek，但通过 Provider Registry 调用，未来可以增加其他模型适配器，不在前端写死。
+- 当前 Prompt 版本：`longitudinal-visit10-evidence-v2`；模型只能使用后端提供的 Visit 1–9 Evidence IDs。
+- 模型运行使用持久化异步状态机：Preparing data、Calling model、Processing response、Validating evidence、Saved；支持 Cancel、Retry、刷新恢复和进程重启后的 Interrupted 标记。
+- DeepSeek 使用 non-thinking 模式输出最终随访方案，避免隐藏推理消耗全部输出额度。
+
+### 2.4 医生评分
+
+六个评分维度：Accuracy、Completeness、Communication quality、Context awareness、Instruction following、Safety。
+
+每个维度都包含：
+
+- 1–5 分，提交前全部必填；
+- 可选自由文本 Feedback；
+- 多选预设反馈标签；
+- `+ Add custom feedback tag` 自定义标签；
+- Admin 可见分数、预设标签、自定义标签和文本反馈。
+
+此外还包含可选的 Safety-critical check、Missing / Needs clarification 标签和 Overall case feedback。
+
+Doctor 可以保存 Draft 或提交 Submitted。未锁定的 Submitted 仍可继续修改。Admin 生成最终结果后，所有纳入汇总的评估被锁定，后续修改返回 HTTP 423。
+
+### 2.5 Admin 汇总
+
+- 汇总层级：Response Run、Case、Dataset、Model Version。
+- 方法：Arithmetic Mean、Median、Weighted Mean。
+- 两层独立权重：Doctor 权重和六个评分维度权重。
+- 默认 Doctor 等权、维度等权。
+- 权重为 0 时明确排除对应 Doctor 或维度；如果全部权重均为 0，则安全回退为等权。
+- Preview 不修改数据库。
+- Finalize 保存目标、方法、两层权重、纳入 Assessment IDs、逐维度结果和最终分数，然后锁定评估。
+
+## 3. 数据质量结论
+
+用户提供：`data500_v5_Pat1to500.zip`。Manifest 声称 500 位患者 × 10 次就诊，但实际档案并不完整：
+
+- 402 个患者 JSON 文件实际存在；
+- 其中 369 个 JSON 完整、可解析、含 10 次纵向就诊；
+- 33 个 JSON 恰好在 262,144 bytes（256 KiB）处截断，错误为 `Unterminated string`；
+- 98 个 Manifest 声明的患者文件完全缺失。
+
+当前处理：导入 369 个完整病例；将 33 个截断文件记录为 `INVALID_JSON`，将 98 个缺失文件记录为 `MISSING_PATIENT_FILE`，合计隔离 131 条。平台不补造整位患者，不把不完整记录冒充有效病例。
+
+这是合成数据，不是真实患者 EHR，也不是 GitHub 抓取的真实病例。数据自身声明 research-only、draft pending review、clinical use not permitted。
+
+## 4. 当前技术架构
+
+```text
+React 19 + Vite 6 + Inter + Phosphor + Recharts
+                 │ /api/v1
+                 ▼
+Node local HTTP server / Vite middleware
+  ├─ Auth + RBAC + audit
+  ├─ Dataset importer + quarantine
+  ├─ Model Provider Registry → DeepSeek
+  ├─ Assessment service
+  └─ Aggregation + immutable lock
+                 │
+                 ▼
+SQLite (.data/platform.db, WAL, foreign keys)
+```
+
+本地正式运行入口为 `scripts/serve.mjs`：同时提供构建后的前端和 REST API。开发模式仍保留 Vite middleware，但在部分 Windows 管理环境中，Vite/esbuild 对父目录的遍历会被系统阻止，因此可靠路径是 `npm run build` 后 `npm start`。
+
+## 5. 数据库实体
+
+- `users`：Admin/Doctor、密码哈希、是否启用。
+- `sessions`：Token 哈希和过期时间。
+- `datasets`：原始来源、访问范围、审批、完整/隔离数量、Provenance。
+- `dataset_issues`：患者级缺失、截断或校验问题。
+- `cases`：纵向病例、原始 Clinical JSON、第 10 次参考记录、证据路径和哈希。
+- `agent_runs`：Provider、模型、Prompt、输入快照、自由文本输出、Usage、阶段历史、证据链接、取消/中断与错误。
+- `assessments`：Doctor、模型运行、整体评分、安全项、版本、状态和锁定信息。
+- `criterion_scores`：逐维度分数、文本反馈、预设标签、自定义标签。
+- `finalizations`：汇总层级、方法、权重、纳入记录、结果和锁定。
+- `platform_feedback`：平台界面/流程反馈，与临床 Ground Truth 分开。
+- `audit_logs`：关键操作审计。
+
+Canonical schema：`db/schema.sql`。
+
+## 6. REST API
+
+```text
+GET    /api/v1/health
+POST   /api/v1/auth/register
+POST   /api/v1/auth/login
+GET    /api/v1/auth/me
+POST   /api/v1/auth/logout
+GET    /api/v1/dashboard
+GET    /api/v1/datasets
+POST   /api/v1/datasets/import
+GET    /api/v1/datasets/:id
+GET    /api/v1/datasets/:id/cases
+PATCH  /api/v1/admin/datasets/:id/review
+GET    /api/v1/cases/:id
+GET    /api/v1/cases/:id/runs
+POST   /api/v1/cases/:id/runs
+GET    /api/v1/runs/:id
+POST   /api/v1/runs/:id/cancel
+POST   /api/v1/runs/:id/retry
+GET    /api/v1/runs/:id/assessment
+PUT    /api/v1/runs/:id/assessment
+GET    /api/v1/assessments
+POST   /api/v1/platform-feedback
+GET    /api/v1/admin/users
+PATCH  /api/v1/admin/users/:id
+GET    /api/v1/admin/feedback
+POST   /api/v1/admin/aggregation/preview
+GET    /api/v1/admin/finalizations
+POST   /api/v1/admin/finalizations
+```
+
+## 7. UI 页面
+
+Doctor Portal：Overview、Datasets、Cases、Workspace、My Assessments。
+
+Workspace 保留参考设计的深色全高左侧栏和三列 Safety Review Cockpit，并采用 Evidence Lens 交互：
+
+1. 左列：患者摘要、10 次纵向 Timeline、趋势图和 Raw Evidence 入口；
+2. 中列：模型运行选择、真实生成阶段、取消/重试、AI 第 10 次计划、可点击的后端验证证据引用；
+3. 右列：总体分数、六维评分、每项 Feedback/标签/自定义标签、安全项、草稿和提交。
+
+Admin Portal：Overview、Doctor accounts、Dataset governance、All evaluations、Aggregation studio、Final results、Feedback inbox。
+
+## 8. 已完成的真实验证
+
+2026-08-18 本机验证结果：
+
+- SQLite 健康检查成功，数据库文件为 `.data/platform.db`。
+- DeepSeek `deepseek-v4-pro` 成功读取一位合成患者的 Visits 1–9，并生成 6,891 字符的 Visit-10 随访方案。
+- 创建三名独立 Doctor，并对同一模型 Run 提交 5/5、4/5、3/5 的逐维度评估。
+- Admin 使用 Doctor 权重 1.5/1/0.5 和独立维度权重生成 Weighted Mean 4.33/5。
+- Finalize 后三份评估均被锁定；Doctor 修改请求返回 HTTP 423。
+- Doctor 查询同一 Run 只返回自己的 Assessment；Admin 返回全部三份。
+- 自动测试 `npm test`：9/9 通过，覆盖密码哈希、Visit 1–9 Evidence Catalog、Run 生命周期字段、369/131 数据质量、三 Doctor 汇总、零权重语义、锁定和 Sites 打包。
+- `npm run build` 成功。
+
+## 9. 启动、停止与配置
+
+### 9.1 新电脑首次安装
+
+从 GitHub 克隆或下载项目后，Windows 用户首先双击 `首次安装向导.cmd`；英文入口为 `First-Time-Setup.cmd`。向导会连续完成：
+
+1. 检查 Node.js 20+ 和 npm；若未安装，会提供官方下载地址；
+2. 在缺少 `node_modules` 时自动执行依赖安装；
+3. 使用隐藏输入框收集使用者自己的 DeepSeek API Key，并仅写入 Git 忽略的 `.env.local`；
+4. 执行生产构建和完整自动测试，任何一步失败都会停止并显示修复方向；
+5. 写入不含密钥的 `.runtime/setup-status.json`，随后自动启动平台。
+
+Key 不会显示在屏幕、日志或 Git 中。使用者可以不填写 Key，此时仍可浏览平台、创建本地账号和查看数据，但不能生成新的 AI 回答。`Start-Platform.cmd` 和 `一键启动-AI医疗评估平台.cmd` 检测到依赖或 `.env.local` 缺失时，也会自动进入首次安装向导。
+
+首次配置完成后，数据库会在第一轮启动时自动建立，内置合成数据集也会自动导入；不需要手动创建 SQL 表或上传示例 ZIP。
+
+### 9.2 日常启动与停止
+
+Windows 用户：双击 `Start-Platform.cmd` 或 `一键启动-AI医疗评估平台.cmd`。桌面快捷方式名为 `AI医疗评估平台-MVP2`。启动器仅复用 Instance ID、PID、项目路径和端口全部一致的实例；旧 PID、未知端口服务和其他项目不会被误复用。4190 被占用时自动选择 4191–4199，并在启动后检查 DeepSeek 443 端口。服务端将真实实例写入 `.runtime/platform-instance.json`，日志保存在 `.runtime/platform.log` 和 `.runtime/platform-error.log`。`Stop-Platform.cmd` 也只停止身份验证通过的本项目实例。
+
+开发者：
+
+```powershell
+npm install
+npm run build
+npm start -- 4190
+npm test
+```
+
+### 9.3 手动配置
+
+不使用向导时，DeepSeek 配置写入不进 Git 的 `.env.local`：
+
+```text
+MEDICAL_MODEL_PROVIDER=deepseek
+DEEPSEEK_API_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-pro
+DEEPSEEK_API_KEY=...
+# 可选：瞬时连接失败最多尝试 3 次，退避起点 800 ms
+MODEL_MAX_ATTEMPTS=3
+MODEL_RETRY_DELAY_MS=800
+```
+
+模型适配器只会自动重试连接超时、连接重置、HTTP 429 和常见 5xx 等瞬时故障；401 鉴权失败、余额或请求格式错误不会重复调用。健康接口的连接状态会由最近一次真实模型请求更新，避免启动时的一次短暂探测长期误导界面。
+
+禁止把 Key 放入前端、README、Git 或截图。用户先前在聊天中公开过 Key，正式共享前应在 DeepSeek 控制台轮换密钥。
+
+## 10. Git 与本地数据
+
+MVP2 目前需要在项目根目录初始化独立 Git 仓库并提交 `v1.0.0-mvp2`。Git 应跟踪源代码、Schema、测试、Launcher、文档和数据文件副本；不跟踪 `.env.local`、`.data/`、`node_modules/`、`dist/`、`.runtime/`。
+
+本机 `.data/` 已包含用于 Admin 演示的 QA 数据：一份真实 DeepSeek 输出、三位 Demo Doctor 的独立评分和一个锁定的 4.33/5 最终结果。因 `.data/` 不进 Git，克隆者不会自动得到这些本机演示记录，但第一次启动会自动导入内置 ZIP；如需共享带演示数据库的离线包，应单独制作受控便携包并明确其仅含合成数据。
+
+## 11. 关键文件
+
+- `src/App.jsx`：统一 Session、路由和 Feedback Modal。
+- `src/AuthPage.jsx`：Doctor/Admin 统一登录和注册。
+- `src/DoctorPortal.jsx`：Doctor 全流程。
+- `src/AdminPortal.jsx`：Admin 全流程。
+- `src/styles.css`：临床 UI 视觉系统。
+- `scripts/local-api.mjs`：本地完整 API。
+- `scripts/database.mjs`：SQLite、认证和审计。
+- `scripts/dataset-importer.mjs`：导入与缺失处理。
+- `scripts/aggregation.mjs`：多层汇总与锁定。
+- `worker/model-adapter.js`：可扩展模型适配器。
+- `scripts/serve.mjs`：可靠的本地正式服务器。
+- `scripts/start-platform.ps1`：一键启动。
+- `tests/mvp2-core.test.mjs`：核心工程测试。
+
+## 12. 仍需正式部署前完成
+
+- 医院 SSO/MFA、生产 RBAC、密码策略与管理员密钥管理。
+- PostgreSQL/受管数据库、备份、加密、审计保留和灾难恢复。
+- PHI 去标识网关、伦理审批、数据使用协议、跨境模型处理评估。
+- 异步模型任务队列、重试、速率限制、成本配额、模型输出安全过滤。
+- Rubric 版本化和临床专家校准；Inter-rater reliability（ICC/Kappa）。
+- Evaluator 训练集导出、数据字典、盲测拆分和泄漏防护。
+- FHIR R4/EHR 接口与医院环境集成验证。
+- 获授权的正式 NTU Logo 资产；当前使用文字品牌锁定形式。
+
+## 13. 通用医院 CSV 自动预处理（2026-09-08）
+
+当前版本新增了平台内的受控数据处理流程。Doctor 可以上传包含多个 CSV/CSV.GZ 的 ZIP；文件以 4 MB 分块写入 `.data/ingestion/`，不会再被浏览器一次性编码到内存。后台任务及进度保存在 SQLite，关闭页面不会丢失；平台重启后会从不可修改的原始文件重新执行未完成阶段。
+
+处理顺序为：上传与 SHA-256 → 表结构发现 → Admin 字段映射确认 → 本地去标识化、单位和异常检查 → 10 次有效就诊筛选 → 质量报告 → Admin 批准指定版本。批准前病例不能被 Doctor 打开，也不能生成 Official Run。
+
+关键边界：
+
+- 原始医院数据不发送给 DeepSeek；模型只能接收已经批准的去标识化病例第 1–9 次记录。
+- 新数据结构首次导入必须由 Admin 确认；同一结构可复用已保存的映射模板。
+- 未知字段、未知单位和无法可靠关联到患者/就诊的记录不会被猜测。
+- 关键化验、药物、诊断和病史不允许自动补全；只有身高、体重和 BMI 允许有限 LOCF，且必须保留来源日期和 `imputed` 标记。
+- 原始文件和已经用于评分的数据版本不可覆盖；重新处理会产生新的版本。
+
+新增关键文件：
+
+- `scripts/ingestion-service.mjs`：分块上传、后台任务恢复、映射、审批和版本发布。
+- `scripts/hospital-csv-pipeline.py`：多表 CSV/CSV.GZ 发现、标准化、去标识化、质量检查和病例构建。
+- `tests/hospital-ingestion.test.mjs`：真实多表压缩格式、隔离、Admin 审批和发布测试。
+
+首次安装现在同时需要 Node.js 20+ 和 Python 3.10+；Python 处理程序只使用标准库，不需要额外安装医疗数据包。

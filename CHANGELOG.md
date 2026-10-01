@@ -1,5 +1,25 @@
 # Changelog
 
+## Repository navigation — 2026-10-01
+
+- Rebuilt the GitHub landing README around purpose, Windows quick start, workflow, directory map and current boundaries.
+- Added bilingual documentation navigation, a layered architecture/data-flow guide, current progress and focused directory READMEs.
+- Archived earlier Chinese/Claude handoffs with explicit historical labels; preserved the detailed engineering reference.
+- Kept frontend/backend/database/model/launcher paths unchanged and added navigation regression tests.
+- Clarified that GitHub downloads do not transfer local patient data, scores, model settings or credentials.
+- Documented a Node.js runtime with built-in `node:sqlite` support rather than relying on the older wizard's Node 20 check.
+
+## Official generation repair — 2026-10-01
+
+- Replaced the mismatched Official Run INSERT placeholders with named SQL bindings.
+- Added visible generation-start/provider errors and integration coverage for failure, retry and replacement archival.
+- Reject incomplete output with `finish_reason: "length"`; preserve prior configurations when changing model budgets.
+
+## Doctor Portal redesign — 2026-09-30
+
+- Retained NTU branding in an Epic-inspired patient worklist, clinical navigator, chart workspace and review sidecar.
+- Preserved existing evidence, scoring and Admin workflows; retained Doctor sign-out in compact navigation.
+
 ## Unreleased — 2026-09-15
 
 - Moved all dataset upload and ingestion authority to Admin; Doctors now see only approved shared cohorts.
