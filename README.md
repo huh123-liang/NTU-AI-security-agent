@@ -86,6 +86,14 @@ Raw hospital data is never sent to a model during preprocessing. The canonical m
 
 Admin > Model registry stores versioned provider configurations for DeepSeek, Qwen, OpenAI, GLM and other OpenAI-compatible Chat Completions endpoints. Each configuration records provider/Base URL/Model ID, local encrypted credential, capability and specialty tags, Admin prompt extension, temperature, token limit and timeout. Dataset routing is suggested from tags but requires Admin confirmation. The same case can be evaluated in separate model-specific batches; Doctors see only labels such as `Model A`, while Admin retains the real provider/model identity. A failed model call never silently switches provider.
 
+### Official generation troubleshooting
+
+- The Official Run creation SQL uses named parameters, with integration tests covering single-visit and longitudinal generation, failure/retry and replacement archival.
+- Generation-start errors appear as red alerts. Provider failures remain attached to the failed run and are displayed in the Official responses table.
+- A response with `finish_reason: "length"` is incomplete and is never published as an Official Run, even if it contains partial text. Increase the selected model's output budget rather than treating reasoning-only or truncated output as a clinical answer.
+- The locally verified DeepSeek `deepseek-v4-pro` configuration used `maxTokens: 16384` and `timeoutMs: 180000`. These are tested settings, not a guarantee for every case or provider. Preserve old evaluation settings by registering a separate configuration or creating a version through `POST /api/v1/admin/models/:id/versions`, then select the new version for generation. Failed runs retried under an old configuration still use that old configuration.
+- Model Registry records, including local v2 settings, API keys, generated answers and clinician data, are not transferred by Git. A fresh clone must configure its own model credentials and generation budget. Official responses selectors display the configuration version and mark the default.
+
 ## Storage and secrets
 
 - SQLite database: `.data/platform.db`

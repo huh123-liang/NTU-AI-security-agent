@@ -3,16 +3,100 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { previewAggregation, finalizeAggregation } from "../scripts/aggregation.mjs";
-import { getDatabase, hashPassword, id, now, resetDatabaseForTests, verifyPassword } from "../scripts/database.mjs";
+import { createSession, getDatabase, hashPassword, id, now, resetDatabaseForTests, sha256, verifyPassword } from "../scripts/database.mjs";
 import { importDatasetBuffer } from "../scripts/dataset-importer.mjs";
 import { CRITERIA } from "../scripts/domain.mjs";
-import { buildTaskPlan, deserializeEvidenceValidation } from "../scripts/local-api.mjs";
+import { buildTaskPlan, deserializeEvidenceValidation, localApiPlugin } from "../scripts/local-api.mjs";
 import { createModelConfig, decryptModelSecret, encryptModelSecret, ensureDefaultModelConfig } from "../scripts/model-registry.mjs";
 import { buildEvidenceCatalog, isRetryableModelError, runMedicalModel, validateEvidenceCitations } from "../worker/model-adapter.js";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+
+for (const visitCount of [1, 10]) {
+  test(`official generation API persists ${visitCount}-visit runs, retries failures and archives replacements`, async () => {
+    const root = testRoot();
+    const originalFetch = globalThis.fetch;
+    let server;
+    let providerCalls = 0;
+    try {
+      const db = getDatabase(root);
+      const admin = db.prepare("SELECT id FROM users WHERE role='admin'").get();
+      const datasetId = id("DATA"), caseId = id("CASE"), versionId = id("VER");
+      const clinical = { synthetic: true, visits: Array.from({ length: visitCount }, (_, index) => ({
+        visit_number: index + 1, date: `2026-${String(index + 1).padStart(2, "0")}-01`,
+        clinic_measurements: { systolic_bp: { value: 138 + index, unit: "mmHg", observed: true } },
+      })) };
+      db.prepare(`INSERT INTO datasets (id,owner_id,name,source_filename,source_path,source_format,source_sha256,status,visibility,created_at)
+        VALUES (?,?,?,?,?,?,?,'Approved','shared',?)`).run(datasetId, admin.id, "Synthetic generation QA", "qa.json", "qa.json", "JSON", "hash", now());
+      db.prepare(`INSERT INTO dataset_versions (id,dataset_id,version_number,status,source_sha256,processed_path,created_by,created_at)
+        VALUES (?,?,1,'Approved',?,?,?,?)`).run(versionId, datasetId, "hash", "qa.json", admin.id, now());
+      db.prepare(`INSERT INTO cases (id,dataset_id,dataset_version_id,patient_id,condition_summary,visit_count,clinical_json,reference_visit_json,source_entry,source_sha256,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(caseId, datasetId, versionId, "SYNTHETIC-QA", "Hypertension", visitCount, JSON.stringify(clinical), "{}", "qa.json", "hash", now());
+      let handler;
+      localApiPlugin(root).configureServer({ middlewares: { use(_prefix, callback) { handler = callback; } } });
+      const model = createModelConfig({ db, root, actorId: admin.id, input: {
+        displayName: "Synthetic test model", anonymousName: "Model B", provider: "openai-compatible",
+        baseUrl: "https://fixtures.invalid/v1", modelId: "qa-model", apiKey: "not-a-real-key",
+      } });
+      const { token } = createSession(db, admin.id);
+      globalThis.fetch = async (url, options) => {
+        if (!String(url).startsWith("https://fixtures.invalid/")) return originalFetch(url, options);
+        providerCalls += 1;
+        if (providerCalls === 1) return new Response(JSON.stringify({ error: { message: "Synthetic authentication failure" } }), { status: 401 });
+        return new Response(JSON.stringify({ id: `qa-response-${providerCalls}`, model: "qa-model",
+          choices: [{ message: { content: "## Assessment\nSynthetic QA observation [EVID:V1-SYSTOLIC-BP]\n## Plan\nResearch test only." } }] }), { status: 200 });
+      };
+      server = createServer((req, res) => handler(req, res, () => { res.statusCode = 404; res.end(); }));
+      await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+      const request = async (path, body = {}) => {
+        const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+          method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body),
+        });
+        const result = await response.json();
+        assert.equal(response.status, 202, JSON.stringify(result));
+        const run = result.run || result;
+        assert.equal(run.status, "Running");
+        return run;
+      };
+      const waitForRun = async (runId) => {
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          const row = db.prepare("SELECT * FROM agent_runs WHERE id=?").get(runId);
+          if (row.lifecycle_status !== "Running") return row;
+          await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+        }
+        assert.fail("Generation did not finish");
+      };
+      const failed = await waitForRun((await request(`/admin/cases/${caseId}/official-run`, { modelConfigId: model.id })).id);
+      assert.equal(failed.study_status, "Official failed");
+      assert.equal(db.prepare("SELECT status FROM evaluation_batches WHERE id=?").get(failed.evaluation_batch_id).status, "Failed");
+      const completed = await waitForRun((await request(`/runs/${failed.id}/retry`)).id);
+      assert.notEqual(completed.id, failed.id);
+      assert.equal(completed.status, "Completed", completed.error_message);
+      assert.equal(completed.study_status, "Official");
+      assert.equal(completed.model_config_id, model.id);
+      assert.equal(completed.dataset_version_id, versionId);
+      assert.equal(completed.task_type, visitCount === 1 ? "single_visit" : "standard_longitudinal");
+      assert.equal(completed.anonymous_model_label, "Model B");
+      assert.equal(completed.case_snapshot_hash, sha256(completed.input_snapshot_json));
+      assert.equal(JSON.parse(completed.input_snapshot_json).visits.length, visitCount === 1 ? 1 : 9);
+      assert.equal(completed.output_hash, sha256(completed.output));
+      assert.equal(deserializeEvidenceValidation(completed.evidence_links_json).evidenceLinks.length, 1);
+      assert.equal(db.prepare("SELECT status FROM evaluation_batches WHERE id=?").get(completed.evaluation_batch_id).status, "Ready");
+      const replacement = await waitForRun((await request(`/admin/cases/${caseId}/official-run`, { modelConfigId: model.id })).id);
+      assert.equal(replacement.study_status, "Official", replacement.error_message);
+      assert.equal(db.prepare("SELECT study_status FROM agent_runs WHERE id=?").get(completed.id).study_status, "Archived");
+      assert.equal(providerCalls, 3);
+    } finally {
+      if (server) await new Promise((resolveClose) => server.close(resolveClose));
+      globalThis.fetch = originalFetch;
+      resetDatabaseForTests();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 function testRoot() {
   const root = mkdtempSync(join(tmpdir(), "ntu-mvp2-test-"));
@@ -113,6 +197,18 @@ test("adaptive task routing supports one, short, standard and undated records", 
   const standard = buildTaskPlan({ visits: Array.from({ length: 12 }, (_, index) => visit(index + 1, `2026-${String((index % 12) + 1).padStart(2, "0")}-01`)) });
   assert.equal(standard.taskType, "standard_longitudinal"); assert.equal(standard.modelVisits.length, 9); assert.equal(standard.reference.visit_number, 12);
   assert.equal(buildTaskPlan({ visits: [visit(1, null)] }).taskType, "undated_snapshot");
+});
+
+test("truncated or reasoning-only model responses cannot be saved as complete answers", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const content of ["", "Partial clinical answer"]) {
+      globalThis.fetch = async () => new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content } }] }), { status: 200 });
+      await assert.rejects(runMedicalModel({ clinicalData: { synthetic: true, visits: [] },
+        config: { apiKey: "not-a-real-key", model: "qa-model", maxTokens: 3200, timeoutMs: 1000 } }),
+      (error) => error.code === "OUTPUT_TOKEN_LIMIT" && error.message.includes("3200 tokens"));
+    }
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test("model registry encrypts API keys outside source configuration", () => {

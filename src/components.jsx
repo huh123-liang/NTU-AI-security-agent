@@ -55,8 +55,9 @@ export function Modal({ title, copy, children, onClose, wide = false, className 
   return <div className="modal-backdrop" role="presentation"><section className={`modal ${wide ? "wide" : ""} ${className}`.trim()} role="dialog" aria-modal="true" aria-label={title}><button className="modal-close" onClick={onClose} aria-label="Close"><X size={18} /></button><div className="modal-heading"><span><FirstAidKit size={22} /></span><div><h2>{title}</h2>{copy && <p>{copy}</p>}</div></div>{children}</section></div>;
 }
 
-export function Toast({ message }) {
-  return message ? <div className="toast"><CheckCircle size={19} weight="fill" />{message}</div> : null;
+export function Toast({ message, tone = "success" }) {
+  const Icon = tone === "error" ? WarningCircle : CheckCircle;
+  return message ? <div className={`toast ${tone}`} role={tone === "error" ? "alert" : "status"}><Icon size={19} weight="fill" />{message}</div> : null;
 }
 
 export function ConfidentialNote({ children }) {

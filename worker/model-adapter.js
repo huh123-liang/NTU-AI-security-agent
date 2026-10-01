@@ -155,9 +155,16 @@ async function runOpenAICompatible({ provider, clinicalData, evidenceCatalog, ap
           requestError.code = `HTTP_${response.status}`;
           throw requestError;
         }
+        const reason = payload?.choices?.[0]?.finish_reason;
+        // A truncated answer (or reasoning-only response) is not a complete
+        // clinical candidate and must never become an Official Run.
+        if (reason === "length") {
+          const error = new Error(`${provider} reached the configured output limit (${maxTokens} tokens) before completing the answer. Increase Max tokens in a new Model Registry version and generate again.`);
+          error.code = "OUTPUT_TOKEN_LIMIT";
+          throw error;
+        }
         const output = payload?.choices?.[0]?.message?.content?.trim();
         if (!output) {
-          const reason = payload?.choices?.[0]?.finish_reason;
           throw new Error(`${provider} returned an empty response${reason ? ` (finish reason: ${reason})` : ""}.`);
         }
         return {

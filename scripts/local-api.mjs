@@ -326,10 +326,17 @@ export function localApiPlugin(root, modelConfig = {}) {
     db.prepare(`INSERT INTO agent_runs (id, case_id, created_by, provider, model_version, prompt_version, status, lifecycle_status,
       stage, stage_history_json, evidence_links_json, cancel_requested, study_status, aggregation_config_json, input_snapshot_json,
       dataset_version_id, case_snapshot_hash, model_config_id, task_type, anonymous_model_label, evaluation_batch_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'Running', 'Running', 'preparing_data', ?, '{}', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(runId, selectedCase.id, userId, selectedModel.provider, selectedModel.modelId, PROMPT_VERSION,
-        JSON.stringify(history), official ? "Official pending" : "Sandbox", JSON.stringify(DEFAULT_AGGREGATION_CONFIG), snapshotJson,
-        selectedCase.dataset_version_id || null, sha256(snapshotJson), selectedModel.id, plan.taskType, selectedModel.anonymousName, batchId, startedAt, startedAt);
+      VALUES ($id, $caseId, $createdBy, $provider, $modelVersion, $promptVersion, 'Running', 'Running',
+        'preparing_data', $history, '{}', 0, $studyStatus, $aggregationConfig, $snapshot,
+        $datasetVersionId, $snapshotHash, $modelConfigId, $taskType, $anonymousLabel, $batchId, $startedAt, $startedAt)`)
+      .run({
+        id: runId, caseId: selectedCase.id, createdBy: userId, provider: selectedModel.provider,
+        modelVersion: selectedModel.modelId, promptVersion: PROMPT_VERSION, history: JSON.stringify(history),
+        studyStatus: official ? "Official pending" : "Sandbox", aggregationConfig: JSON.stringify(DEFAULT_AGGREGATION_CONFIG),
+        snapshot: snapshotJson, datasetVersionId: selectedCase.dataset_version_id || null, snapshotHash: sha256(snapshotJson),
+        modelConfigId: selectedModel.id, taskType: plan.taskType, anonymousLabel: selectedModel.anonymousName,
+        batchId, startedAt,
+      });
     db.prepare(`INSERT INTO evaluation_batches (id,dataset_version_id,case_id,task_type,model_config_id,model_config_version,prompt_version,
       anonymous_model_label,run_id,status,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,'Pending',?,?)`)
       .run(batchId, selectedCase.dataset_version_id || null, selectedCase.id, plan.taskType, selectedModel.id, selectedModel.version,

@@ -30,8 +30,8 @@ export function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const notify = (message) => {
-    setToast(message);
+  const notify = (message, tone = "success") => {
+    setToast({ message, tone });
     window.clearTimeout(window.__ntuToastTimer);
     window.__ntuToastTimer = window.setTimeout(() => setToast(""), 3600);
   };
@@ -58,7 +58,7 @@ export function App() {
         : <DoctorPortal route={activeRoute} routeId={location.routeId} navigate={navigate} notify={notify} user={user} locale={locale} />}
     </Shell>
     {feedbackOpen && <PlatformFeedbackModal page={activeRoute} onClose={() => setFeedbackOpen(false)} onSaved={() => { setFeedbackOpen(false); notify("Platform feedback saved to the Admin inbox."); }} />}
-    <Toast message={toast} />
+    <Toast message={toast.message || ""} tone={toast.tone} />
   </>;
 }
 
